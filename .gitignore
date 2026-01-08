@@ -1,0 +1,26 @@
+# R / RStudio
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+.Rprofile
+.Renviron
+
+# R packages and intermediate files
+*.RData
+*.rda
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temp
+*.log
+*.tmp
+
+# Python cache (if any)
+__pycache__/
+
+# Uncomment to ignore data folder if you don't want to track CSVs
+# data/
