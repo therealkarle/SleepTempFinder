@@ -54,6 +54,121 @@ sensor_raw <- map_df(config$usage_timeline, function(x) {
     mutate(timestamp = parse_date_time(timestamp, orders = c("d/m/Y H:M", "dmY HM", "Ymd HMS")))
 })
 
+# --- OUTLIER FILTERING (optional: configured in config.yaml) ---
+apply_outlier_filter <- function(df, cols = c("room_temp","rel_hum","abs_hum"), method = "iqr", iqr_mult = 1.5, z_thresh = 3) {
+  for(col in cols) {
+    if(!col %in% names(df)) next
+    vals <- df[[col]]
+    if(method == "iqr") {
+      Q1 <- quantile(vals, 0.25, na.rm=TRUE)
+      Q3 <- quantile(vals, 0.75, na.rm=TRUE)
+      IQRv <- Q3 - Q1
+      lower <- Q1 - iqr_mult * IQRv
+      upper <- Q3 + iqr_mult * IQRv
+      df <- df %>% filter(is.na(.data[[col]]) | (.data[[col]] >= lower & .data[[col]] <= upper))
+    } else if(method == "zscore") {
+      m <- mean(vals, na.rm=TRUE)
+      s <- sd(vals, na.rm=TRUE)
+      if(is.na(s) || s == 0) next
+      df <- df %>% filter(is.na(.data[[col]]) | (abs((.data[[col]] - m)/s) <= z_thresh))
+    }
+  }
+  return(df)
+}
+
+# Track dates removed by outlier filtering (both sensor and nightly stages)
+excluded_outlier_dates <- c()
+
+if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
+  cols_cfg <- if(!is.null(config$outlier_filter$columns)) unlist(config$outlier_filter$columns) else c("room_temp","rel_hum","abs_hum")
+  method_cfg <- if(!is.null(config$outlier_filter$method)) config$outlier_filter$method else "iqr"
+  iqr_cfg <- if(!is.null(config$outlier_filter$iqr_multiplier)) config$outlier_filter$iqr_multiplier else 1.5
+  z_cfg <- if(!is.null(config$outlier_filter$z_threshold)) config$outlier_filter$z_threshold else 3
+  stage_cfg <- if(!is.null(config$outlier_filter$apply_stage)) config$outlier_filter$apply_stage else "sensor"
+  if(tolower(stage_cfg) == "sensor") {
+    cfg_cols_exist <- intersect(cols_cfg, names(sensor_raw))
+    # Keep a copy of the raw sensor data before filtering so we can detect nights that lost nightly averages
+    sensor_raw_before <- sensor_raw
+
+    # Count per-night sensor readings and valid values before filtering (for configured cols)
+    sensor_before <- sensor_raw_before %>%
+      mutate(Date = as.Date(timestamp - hours(12))) %>%
+      group_by(Date) %>%
+      summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
+
+    n_before <- nrow(sensor_raw_before)
+    sensor_raw <- apply_outlier_filter(sensor_raw, cols_cfg, method_cfg, iqr_cfg, z_cfg)
+    n_after <- nrow(sensor_raw)
+
+    # Count valid values after filtering
+    sensor_after <- sensor_raw %>%
+      mutate(Date = as.Date(timestamp - hours(12))) %>%
+      group_by(Date) %>%
+      summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
+
+    # Identify dates where there were valid values before, but none after (for any configured column)
+    if(nrow(sensor_before) > 0) {
+      valid_before_mat <- sensor_before %>% select(Date, starts_with("valid_"))
+      valid_after_mat <- sensor_after %>% select(Date, starts_with("valid_"))
+
+      valid_before_mat$has_valid_before <- apply(valid_before_mat %>% select(-Date), 1, function(r) any(r > 0))
+      if(nrow(valid_after_mat) > 0) {
+        valid_after_mat$has_valid_after <- apply(valid_after_mat %>% select(-Date), 1, function(r) any(r > 0))
+      } else {
+        valid_after_mat <- tibble(Date = as.Date(character(0)), has_valid_after = logical(0))
+      }
+
+      merged_val <- valid_before_mat %>% left_join(valid_after_mat, by = "Date") %>% mutate(has_valid_after = ifelse(is.na(has_valid_after), FALSE, has_valid_after))
+      dates_lost_sensor <- merged_val %>% filter(has_valid_before == TRUE & has_valid_after == FALSE) %>% pull(Date)
+
+      # Extra check via nightly averages: if nightly avg existed before but is NA after, treat as outlier-removed
+      sensor_nightly_before <- sensor_raw_before %>%
+        mutate(Date = as.Date(timestamp - hours(12))) %>%
+        group_by(Date) %>%
+        summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
+
+      sensor_nightly_after <- sensor_raw %>%
+        mutate(Date = as.Date(timestamp - hours(12))) %>%
+        group_by(Date) %>%
+        summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
+
+      # Determine nights where any nightly average existed before filtering but is NA/NaN after filtering
+      merged_nightly <- sensor_nightly_before %>% left_join(sensor_nightly_after, by = "Date", suffix = c("_before", "_after"))
+
+      cols_to_check <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum")
+      cols_present <- intersect(cols_to_check, names(merged_nightly))
+
+      if(length(cols_present) > 0) {
+        lost_mat <- sapply(cols_present, function(col) {
+          before <- merged_nightly[[paste0(col, "_before")]]
+          after <- merged_nightly[[paste0(col, "_after")]]
+          (!is.na(before)) & (is.na(after) | is.nan(after))
+        })
+        if(is.matrix(lost_mat)) {
+          lost_rows <- apply(lost_mat, 1, any)
+        } else {
+          lost_rows <- as.logical(lost_mat)
+        }
+        nights_lost_by_avg <- merged_nightly$Date[which(lost_rows)]
+      } else {
+        nights_lost_by_avg <- as.Date(character(0))
+      }
+
+      dates_to_mark <- unique(c(dates_lost_sensor, nights_lost_by_avg))
+
+      if(length(dates_to_mark) > 0) {
+        removed_dates_fmt <- format(dates_to_mark, "%d.%m.%Y")
+        excluded_outlier_dates <- unique(c(excluded_outlier_dates, removed_dates_fmt))
+        cat(sprintf("Outlier filter (sensor) removed data for nights (all values NA after filtering): %s\n", paste(removed_dates_fmt, collapse = ", ")))
+      }
+    }
+
+    cat(sprintf("Outlier filter enabled (sensor): removed %d sensor rows\n", n_before - n_after))
+  } else {
+    cat(sprintf("Outlier filter enabled but set to apply at '%s' stage\n", stage_cfg))
+  }
+}
+
 # --- 3. DATA PREP & AUDIT ---
 sleep_complete <- sleep_df_raw %>%
   rename(Sleep_Score = !!sym(mapping$garmin_sleep_score), HRV = !!sym(mapping$garmin_hrv), RHR = !!sym(mapping$garmin_rhr))
@@ -68,19 +183,66 @@ temp_mapped <- sleep_filtered %>%
          Avg_Abs_Hum = mean(sensor_raw$abs_hum[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T)) %>%
   ungroup()
 
+# --- OUTLIER FILTERING (nightly stage) ---
+if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
+  stage_cfg <- if(!is.null(config$outlier_filter$apply_stage)) config$outlier_filter$apply_stage else "sensor"
+  if(tolower(stage_cfg) == "nightly") {
+    cols_nightly <- if(!is.null(config$outlier_filter$columns)) unlist(config$outlier_filter$columns) else c("room_temp","rel_hum","abs_hum")
+    # Map sensor column names to nightly average column names
+    cols_nightly_mapped <- sapply(cols_nightly, function(c) {
+      if(c == "room_temp") return("Avg_Temp")
+      if(c == "rel_hum") return("Avg_Rel_Hum")
+      if(c == "abs_hum") return("Avg_Abs_Hum")
+      return(c)
+    })
+    method_cfg <- if(!is.null(config$outlier_filter$method)) config$outlier_filter$method else "iqr"
+    iqr_cfg <- if(!is.null(config$outlier_filter$iqr_multiplier)) config$outlier_filter$iqr_multiplier else 1.5
+    z_cfg <- if(!is.null(config$outlier_filter$z_threshold)) config$outlier_filter$z_threshold else 3
+    temp_mapped_before <- temp_mapped
+    n_before <- nrow(temp_mapped_before)
+    temp_mapped <- apply_outlier_filter(temp_mapped, cols = cols_nightly_mapped, method = method_cfg, iqr_mult = iqr_cfg, z_thresh = z_cfg)
+    n_after <- nrow(temp_mapped)
+
+    # Identify nights explicitly removed by nightly outlier filtering
+    removed_dates_nightly <- setdiff(temp_mapped_before$Date, temp_mapped$Date)
+    if(length(removed_dates_nightly) > 0) {
+      removed_fmt <- format(removed_dates_nightly, "%d.%m.%Y")
+      excluded_outlier_dates <- unique(c(excluded_outlier_dates, removed_fmt))
+      cat(sprintf("Outlier filter (nightly) removed nights: %s\n", paste(removed_fmt, collapse = ", ")))
+    }
+
+    cat(sprintf("Outlier filter enabled (nightly): removed %d nights\n", n_before - n_after))
+  }
+}
+
 final_data_matched <- temp_mapped %>% 
   filter(!is.na(Avg_Temp), !is.nan(Avg_Temp), !is.na(Avg_Abs_Hum))
 
 full_dates <- seq(min(temp_mapped$Date, na.rm=T), max(temp_mapped$Date, na.rm=T), by="1 day")
 final_data_viz <- temp_mapped %>% complete(Date = full_dates)
 
+# --- EXCLUDE: Define reasons (Missing Sleep, Missing Room, Outliers) ---
 excluded_sleep_dates <- sleep_complete %>% 
   filter(is.na(Sleep_Score) | is.na(HRV) | is.na(RHR)) %>% 
-  pull(Date) %>% format("%d.%m.%Y")
+  pull(Date)
 
-excluded_sensor_dates <- temp_mapped %>% 
+excluded_sensor_dates_all <- temp_mapped %>% 
   filter(is.na(Avg_Temp) | is.nan(Avg_Temp) | is.na(Avg_Abs_Hum)) %>% 
-  pull(Date) %>% format("%d.%m.%Y")
+  pull(Date)
+
+# Convert any collected outlier strings back to Date objects for set operations
+excluded_outlier_dates_dates <- if(length(excluded_outlier_dates) > 0) as.Date(excluded_outlier_dates, "%d.%m.%Y") else as.Date(character(0))
+
+# Nights that are missing room data but were NOT removed due to outlier-filtering
+excluded_sensor_dates <- setdiff(excluded_sensor_dates_all, excluded_outlier_dates_dates)
+
+# Unique total excluded nights across all reasons
+unique_excluded_dates <- unique(c(excluded_sleep_dates, excluded_sensor_dates, excluded_outlier_dates_dates))
+
+# Format for printing
+excluded_sleep_fmt <- format(excluded_sleep_dates, "%d.%m.%Y")
+excluded_sensor_fmt <- format(excluded_sensor_dates, "%d.%m.%Y")
+excluded_outlier_fmt <- unique(excluded_outlier_dates)
 
 # --- OUTPUT: AUDIT ---
 cat("\n===========================================================\n")
@@ -88,12 +250,14 @@ cat("                DATA QUALITY AUDIT\n")
 cat("===========================================================\n")
 cat(sprintf("Total nights detected:        %d\n", nrow(sleep_df_raw)))
 cat(sprintf("Nights used for analysis:     %d\n", nrow(final_data_matched)))
-cat(sprintf("Nights excluded total:        %d\n", length(excluded_sleep_dates) + length(excluded_sensor_dates)))
+cat(sprintf("Nights excluded total:        %d\n", length(unique_excluded_dates)))
 cat("-----------------------------------------------------------\n")
-cat(sprintf("Reason: Missing Sleep Data:   %d\n", length(excluded_sleep_dates)))
-if(length(excluded_sleep_dates) > 0) cat(paste0("       [", paste(excluded_sleep_dates, collapse = "], ["), "]\n"))
-cat(sprintf("Reason: Missing Room Data:    %d\n", length(excluded_sensor_dates)))
-if(length(excluded_sensor_dates) > 0) cat(paste0("       [", paste(excluded_sensor_dates, collapse = "], ["), "]\n"))
+cat(sprintf("Reason: Missing Sleep Data:   %d\n", length(excluded_sleep_fmt)))
+if(length(excluded_sleep_fmt) > 0) cat(paste0("       [", paste(excluded_sleep_fmt, collapse = "], ["), "]\n"))
+cat(sprintf("Reason: Missing Room Data:    %d\n", length(excluded_sensor_fmt)))
+if(length(excluded_sensor_fmt) > 0) cat(paste0("       [", paste(excluded_sensor_fmt, collapse = "], ["), "]\n"))
+cat(sprintf("Reason: Outlier Filtered:     %d\n", length(excluded_outlier_fmt)))
+if(length(excluded_outlier_fmt) > 0) cat(paste0("       [", paste(excluded_outlier_fmt, collapse = "], ["), "]\n"))
 cat("===========================================================\n\n")
 
 # --- OUTPUT: DESCRIPTIVE STATISTICS ---

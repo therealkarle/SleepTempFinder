@@ -1,5 +1,5 @@
 # --- GLOBAL PATH SETTINGS ---
-data_directory: "../data/2026.01.06"
+data_directory: "../data/2026.01.22"
 
 # --- COLUMN MAPPING ---
 column_names:
@@ -34,5 +34,14 @@ quality_mapping:
 usage_timeline:
   - { file_id: "FlorianZimmerSensor", start: "2020-01-01", end: "2030-12-31" }
 
-sleep_data_sources: ["Schlaf(3).csv"]
+sleep_data_sources: ["Schlaf(5).csv"]
+
+# --- OUTLIER FILTER ---
+outlier_filter:
+  enabled: true
+  method: "iqr" # options: "iqr" or "zscore"
+  iqr_multiplier: 1.5
+  z_threshold: 3
+  apply_stage: "sensor" # "sensor" or "nightly"
+  columns: ["room_temp", "rel_hum", "abs_hum"]
 

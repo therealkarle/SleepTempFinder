@@ -1,0 +1,10 @@
+﻿RScript/.RData
+RScript/.Rhistory
+RScript/SleepTempFinder.R
+RScript/config.yaml
+ShinyWebApp/.Rhistory
+ShinyWebApp/SleepTempFinderShiny.R
+ShinyWebApp/configShiny.yaml
+data/2026.01.06/Schlaf(3).csv
+data/2026.01.06/ThermometerZimmerFlorian_data.csv
+desktop.ini
