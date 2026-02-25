@@ -1,5 +1,5 @@
 # --- GLOBAL PATH SETTINGS ---
-data_directory: "../data/2026.01.22"
+data_directory: "../data"
 
 # --- COLUMN MAPPING ---
 column_names:
@@ -35,6 +35,27 @@ usage_timeline:
   - { file_id: "FlorianZimmerSensor", start: "2020-01-01", end: "2030-12-31" }
 
 sleep_data_sources: ["Schlaf(5).csv"]
+
+# --- CALENDAR SOURCE (SENSOR & FLAGS) ---
+calendar_source:
+  enabled: true
+  mode: "url" # options: "url" or "file"
+  url: "https://calendar.google.com/calendar/ical/NTEwMjZkNjM5NDRiMWUxNGZkMmQwN2ZiMDk5MGJhYWZlOTY0OGVjNjc5NTVjMGM2NDBhYTYzMGU2MmMyZGIwNUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t/public/basic.ics"
+  file_path: ""
+
+calendar_assignment:
+  require_prev_next_day: true
+  apply_separately_for_sensor_and_flags: true
+
+calendar_parser:
+  tolerant: true
+  event_field_priority: ["SUMMARY", "DESCRIPTION"]
+
+analysis_filter:
+  enabled: false
+  sensor_include: []
+  flags_include: []
+  flags_mode: "any" # options: "any" or "all"
 
 # --- OUTLIER FILTER ---
 outlier_filter:

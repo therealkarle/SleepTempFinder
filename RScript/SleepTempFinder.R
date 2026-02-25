@@ -8,6 +8,18 @@ for (pkg in pkgs) {
 
 if (interactive()) setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 config <- read_yaml("config.yaml")
+# If a private config exists it overrides values from config.yaml
+private_cfg_path <- "config.private.yaml"
+if (file.exists(private_cfg_path)) {
+  try({
+    private_cfg <- read_yaml(private_cfg_path)
+    # simple shallow merge: replace top-level keys with private values
+    for (k in names(private_cfg)) config[[k]] <- private_cfg[[k]]
+    cat("Private config loaded (RScript/config.private.yaml)\n")
+  }, silent = TRUE)
+} else {
+  cat("No private config found (RScript/config.private.yaml) - using repo config.yaml\n")
+}
 
 # --- 2. DATA CLEANING & LOADING ---
 read_garmin_fixed <- function(path) {
@@ -35,6 +47,245 @@ clean_val_final <- function(x) {
   return(res)
 }
 
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) return(y)
+  x
+}
+
+trim_vector <- function(x) {
+  x <- str_trim(as.character(x))
+  x[x != "" & !is.na(x)]
+}
+
+collapse_flags <- function(x) {
+  vals <- sort(unique(trim_vector(x)))
+  if (length(vals) == 0) return(NA_character_)
+  paste(vals, collapse = ", ")
+}
+
+split_flags <- function(x) {
+  if (is.na(x) || str_trim(x) == "") return(character(0))
+  sort(unique(trim_vector(str_split(x, "\\s*,\\s*")[[1]])))
+}
+
+read_ics_lines <- function(mode, url_value = NULL, file_value = NULL) {
+  if (tolower(mode) == "url") {
+    con <- base::url(url_value)
+    on.exit(close(con), add = TRUE)
+    return(readLines(con, warn = FALSE, encoding = "UTF-8"))
+  }
+  readLines(file_value, warn = FALSE, encoding = "UTF-8")
+}
+
+unfold_ics_lines <- function(lines) {
+  out <- character(0)
+  for (ln in lines) {
+    if (length(out) > 0 && str_detect(ln, "^[ \\t]")) {
+      out[length(out)] <- paste0(out[length(out)], str_sub(ln, 2))
+    } else {
+      out <- c(out, ln)
+    }
+  }
+  out
+}
+
+extract_ics_prop <- function(lines, prop) {
+  idx <- which(str_detect(lines, paste0("^", prop, "(;[^:]*)?:")))
+  if (length(idx) == 0) return(list(value = NA_character_, params = ""))
+  line <- lines[idx[1]]
+  value <- str_replace(line, "^[^:]*:", "")
+  params <- str_match(line, paste0("^", prop, "(;[^:]*)?:"))[, 2]
+  list(value = value, params = params %||% "")
+}
+
+parse_ics_time <- function(value) {
+  if (is.na(value) || value == "") return(NA)
+  val <- str_trim(value)
+  if (str_detect(val, "^\\d{8}$")) return(ymd(val, quiet = TRUE))
+  if (str_detect(val, "^\\d{8}T\\d{6}Z$")) return(ymd_hms(val, tz = "UTC", quiet = TRUE))
+  if (str_detect(val, "^\\d{8}T\\d{6}$")) return(ymd_hms(val, quiet = TRUE))
+  if (str_detect(val, "^\\d{8}T\\d{4}$")) return(parse_date_time(val, orders = "Ymd HM", quiet = TRUE))
+  parse_date_time(val, orders = c("Ymd HMS", "Ymd HM", "Y-m-d H:M:S", "Y-m-d H:M", "Y-m-d"), quiet = TRUE)
+}
+
+parse_sensor_flags <- function(text_value) {
+  text_value <- text_value %||% ""
+  sensor_match <- str_match(text_value, regex("sensor\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))
+  flags_match <- str_match(text_value, regex("flags?\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))
+
+  sensor_raw <- str_trim(sensor_match[, 2] %||% NA_character_)
+  sensor_name <- sensor_raw
+  if (!is.na(sensor_name) && str_detect(sensor_name, "/")) {
+    sensor_name <- str_trim(str_split(sensor_name, "/", n = 2)[[1]][2])
+  }
+
+  flags <- character(0)
+  if (!is.na(flags_match[, 2] %||% NA_character_)) {
+    flags <- split_flags(flags_match[, 2])
+  }
+
+  list(sensor_raw = ifelse(is.na(sensor_raw) || sensor_raw == "", NA_character_, sensor_raw),
+       sensor_name = ifelse(is.na(sensor_name) || sensor_name == "", NA_character_, sensor_name),
+       flags = flags)
+}
+
+load_calendar_daily <- function(calendar_cfg, parser_cfg) {
+  if (is.null(calendar_cfg) || !isTRUE(calendar_cfg$enabled)) {
+    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+  }
+
+  mode <- tolower(calendar_cfg$mode %||% "url")
+  url_value <- calendar_cfg$url %||% ""
+  file_value <- calendar_cfg$file_path %||% ""
+
+  if (mode == "url" && url_value == "") {
+    cat("Calendar enabled but URL is empty. Calendar assignments skipped.\n")
+    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+  }
+  if (mode == "file" && file_value == "") {
+    cat("Calendar enabled but file_path is empty. Calendar assignments skipped.\n")
+    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+  }
+
+  lines <- tryCatch(read_ics_lines(mode = mode, url_value = url_value, file_value = file_value),
+                    error = function(e) {
+                      cat(sprintf("Calendar load failed: %s\n", e$message))
+                      character(0)
+                    })
+  if (length(lines) == 0) {
+    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+  }
+
+  unfolded <- unfold_ics_lines(lines)
+  begin_idx <- which(unfolded == "BEGIN:VEVENT")
+  end_idx <- which(unfolded == "END:VEVENT")
+  n_events <- min(length(begin_idx), length(end_idx))
+  if (n_events == 0) {
+    cat("Calendar loaded, but no VEVENT entries found.\n")
+    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+  }
+
+  event_rows <- vector("list", n_events)
+  for (i in seq_len(n_events)) {
+    chunk <- unfolded[begin_idx[i]:end_idx[i]]
+    dt_start <- extract_ics_prop(chunk, "DTSTART")
+    dt_end <- extract_ics_prop(chunk, "DTEND")
+    summary_p <- extract_ics_prop(chunk, "SUMMARY")
+    description_p <- extract_ics_prop(chunk, "DESCRIPTION")
+
+    start_time <- parse_ics_time(dt_start$value)
+    end_time <- parse_ics_time(dt_end$value)
+    if (is.na(start_time)) next
+
+    start_date <- as.Date(start_time)
+    end_date <- start_date
+    if (!is.na(end_time)) {
+      if (str_detect(dt_end$params %||% "", "VALUE=DATE")) {
+        end_date <- as.Date(end_time) - days(1)
+      } else {
+        end_date <- as.Date(end_time)
+      }
+    }
+    if (is.na(end_date) || end_date < start_date) end_date <- start_date
+
+    fields_order <- toupper(unlist(parser_cfg$event_field_priority %||% c("SUMMARY", "DESCRIPTION")))
+    field_text <- character(0)
+    for (field_name in fields_order) {
+      if (field_name == "SUMMARY" && !is.na(summary_p$value) && summary_p$value != "") field_text <- c(field_text, summary_p$value)
+      if (field_name == "DESCRIPTION" && !is.na(description_p$value) && description_p$value != "") field_text <- c(field_text, description_p$value)
+    }
+    combined_text <- paste(unique(field_text), collapse = "; ")
+    parsed <- parse_sensor_flags(combined_text)
+
+    date_seq <- seq(start_date, end_date, by = "1 day")
+    event_rows[[i]] <- tibble(Date = as.Date(date_seq),
+                              Sensor_Raw = parsed$sensor_raw,
+                              Sensor = parsed$sensor_name,
+                              Flags_List = list(parsed$flags))
+  }
+
+  events_daily <- bind_rows(event_rows)
+  if (nrow(events_daily) == 0) {
+    cat("Calendar events found, but no Sensor/Flags metadata parsed.\n")
+    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+  }
+
+  calendar_daily <- events_daily %>%
+    group_by(Date) %>%
+    summarise(
+      sensor_values = list(unique(na.omit(Sensor))),
+      flags_values = list(sort(unique(unlist(Flags_List)))),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Sensor = map_chr(sensor_values, ~ if (length(.x) == 1) .x[[1]] else NA_character_),
+      Flags_List = map(flags_values, ~ trim_vector(.x)),
+      Flags = map_chr(Flags_List, collapse_flags)
+    )
+
+  conflicting_sensor_days <- calendar_daily %>% filter(map_int(sensor_values, length) > 1) %>% nrow()
+  if (conflicting_sensor_days > 0) {
+    cat(sprintf("Calendar warning: %d day(s) had conflicting sensors and were set to NA.\n", conflicting_sensor_days))
+  }
+
+  calendar_daily <- calendar_daily %>% select(Date, Sensor, Flags, Flags_List)
+
+  cat(sprintf("Calendar loaded: %d day assignments parsed.\n", nrow(calendar_daily)))
+  calendar_daily
+}
+
+apply_calendar_three_day_rule <- function(calendar_daily, assignment_cfg) {
+  if (nrow(calendar_daily) == 0) return(calendar_daily)
+  if (is.null(assignment_cfg) || !isTRUE(assignment_cfg$require_prev_next_day)) return(calendar_daily)
+
+  full_dates <- seq(min(calendar_daily$Date, na.rm = TRUE), max(calendar_daily$Date, na.rm = TRUE), by = "1 day")
+  aligned <- tibble(Date = as.Date(full_dates)) %>%
+    left_join(calendar_daily %>% select(Date, Sensor, Flags, Flags_List), by = "Date") %>%
+    arrange(Date)
+
+  sensor_vec <- aligned$Sensor
+  sensor_prev <- lag(sensor_vec)
+  sensor_next <- lead(sensor_vec)
+  aligned$Sensor <- ifelse(!is.na(sensor_vec) & sensor_vec == sensor_prev & sensor_vec == sensor_next, sensor_vec, NA_character_)
+
+  flags_raw <- map(aligned$Flags_List, ~ if (is.null(.x)) character(0) else trim_vector(.x))
+  flags_keep <- vector("list", length(flags_raw))
+  for (i in seq_along(flags_raw)) {
+    prev_flags <- if (i > 1) flags_raw[[i - 1]] else character(0)
+    next_flags <- if (i < length(flags_raw)) flags_raw[[i + 1]] else character(0)
+    flags_keep[[i]] <- sort(unique(intersect(intersect(flags_raw[[i]], prev_flags), next_flags)))
+  }
+
+  aligned$Flags_List <- flags_keep
+  aligned$Flags <- map_chr(aligned$Flags_List, collapse_flags)
+  aligned
+}
+
+apply_analysis_subset_filter <- function(df, filter_cfg) {
+  if (is.null(filter_cfg) || !isTRUE(filter_cfg$enabled) || nrow(df) == 0) return(df)
+
+  sensor_include <- trim_vector(unlist(filter_cfg$sensor_include %||% character(0)))
+  flags_include <- trim_vector(unlist(filter_cfg$flags_include %||% character(0)))
+  flags_mode <- tolower(filter_cfg$flags_mode %||% "any")
+  if (!flags_mode %in% c("any", "all")) flags_mode <- "any"
+
+  out <- df
+  if (length(sensor_include) > 0 && "Sensor" %in% names(out)) {
+    out <- out %>% filter(!is.na(Sensor), Sensor %in% sensor_include)
+  }
+
+  if (length(flags_include) > 0 && "Flags" %in% names(out)) {
+    out <- out %>%
+      mutate(.flags_vec = map(Flags, split_flags)) %>%
+      filter(map_lgl(.flags_vec, function(row_flags) {
+        if (flags_mode == "all") all(flags_include %in% row_flags) else any(flags_include %in% row_flags)
+      })) %>%
+      select(-.flags_vec)
+  }
+
+  out
+}
+
 mapping <- config$column_names
 sleep_df_raw <- map_df(config$sleep_data_sources, function(f) {
   read_garmin_fixed(file.path(config$data_directory, f)) %>%
@@ -53,6 +304,9 @@ sensor_raw <- map_df(config$usage_timeline, function(x) {
     rename(timestamp = !!f_info$col_time, room_temp = !!f_info$col_temp, rel_hum = !!f_info$col_hum, abs_hum = `Abs Humidity(g/m³)`) %>% 
     mutate(timestamp = parse_date_time(timestamp, orders = c("d/m/Y H:M", "dmY HM", "Ymd HMS")))
 })
+
+calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calendar_parser)
+calendar_daily <- apply_calendar_three_day_rule(calendar_daily_raw, config$calendar_assignment)
 
 # --- OUTLIER FILTERING (optional: configured in config.yaml) ---
 apply_outlier_filter <- function(df, cols = c("room_temp","rel_hum","abs_hum"), method = "iqr", iqr_mult = 1.5, z_thresh = 3) {
@@ -181,7 +435,8 @@ temp_mapped <- sleep_filtered %>%
   mutate(Avg_Temp = mean(sensor_raw$room_temp[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T),
          Avg_Rel_Hum = mean(sensor_raw$rel_hum[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T),
          Avg_Abs_Hum = mean(sensor_raw$abs_hum[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T)) %>%
-  ungroup()
+  ungroup() %>%
+  left_join(calendar_daily %>% select(Date, Sensor, Flags), by = "Date")
 
 # --- OUTLIER FILTERING (nightly stage) ---
 if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
@@ -218,8 +473,21 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 final_data_matched <- temp_mapped %>% 
   filter(!is.na(Avg_Temp), !is.nan(Avg_Temp), !is.na(Avg_Abs_Hum))
 
-full_dates <- seq(min(temp_mapped$Date, na.rm=T), max(temp_mapped$Date, na.rm=T), by="1 day")
-final_data_viz <- temp_mapped %>% complete(Date = full_dates)
+n_before_analysis_filter <- nrow(final_data_matched)
+final_data_matched <- apply_analysis_subset_filter(final_data_matched, config$analysis_filter)
+n_after_analysis_filter <- nrow(final_data_matched)
+
+if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
+  cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter))
+}
+
+if(nrow(final_data_matched) > 0) {
+  full_dates <- seq(min(final_data_matched$Date, na.rm=T), max(final_data_matched$Date, na.rm=T), by="1 day")
+  final_data_viz <- final_data_matched %>% complete(Date = full_dates)
+} else {
+  full_dates <- as.Date(character(0))
+  final_data_viz <- final_data_matched
+}
 
 # --- EXCLUDE: Define reasons (Missing Sleep, Missing Room, Outliers) ---
 excluded_sleep_dates <- sleep_complete %>% 
@@ -244,6 +512,11 @@ excluded_sleep_fmt <- format(excluded_sleep_dates, "%d.%m.%Y")
 excluded_sensor_fmt <- format(excluded_sensor_dates, "%d.%m.%Y")
 excluded_outlier_fmt <- unique(excluded_outlier_dates)
 
+calendar_days_raw_n <- nrow(calendar_daily_raw)
+calendar_days_after_rule_n <- nrow(calendar_daily)
+calendar_sensor_assigned_n <- sum(!is.na(temp_mapped$Sensor))
+calendar_flags_assigned_n <- sum(!is.na(temp_mapped$Flags))
+
 # --- OUTPUT: AUDIT ---
 cat("\n===========================================================\n")
 cat("                DATA QUALITY AUDIT\n")
@@ -258,6 +531,14 @@ cat(sprintf("Reason: Missing Room Data:    %d\n", length(excluded_sensor_fmt)))
 if(length(excluded_sensor_fmt) > 0) cat(paste0("       [", paste(excluded_sensor_fmt, collapse = "], ["), "]\n"))
 cat(sprintf("Reason: Outlier Filtered:     %d\n", length(excluded_outlier_fmt)))
 if(length(excluded_outlier_fmt) > 0) cat(paste0("       [", paste(excluded_outlier_fmt, collapse = "], ["), "]\n"))
+cat("-----------------------------------------------------------\n")
+cat(sprintf("Calendar days parsed:         %d\n", calendar_days_raw_n))
+cat(sprintf("Calendar days after 3-day:    %d\n", calendar_days_after_rule_n))
+cat(sprintf("Nights with Sensor assigned:  %d\n", calendar_sensor_assigned_n))
+cat(sprintf("Nights with Flags assigned:   %d\n", calendar_flags_assigned_n))
+if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
+  cat(sprintf("Analysis filter kept:         %d / %d\n", n_after_analysis_filter, n_before_analysis_filter))
+}
 cat("===========================================================\n\n")
 
 # --- OUTPUT: DESCRIPTIVE STATISTICS ---

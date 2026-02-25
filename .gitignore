@@ -24,3 +24,6 @@ __pycache__/
 
 # Uncomment to ignore data folder if you don't want to track CSVs
 # data/
+
+# Ignore private config overrides (should not be committed)
+RScript/config.private.yaml
