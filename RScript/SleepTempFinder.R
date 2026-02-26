@@ -7,19 +7,37 @@ for (pkg in pkgs) {
 }
 
 if (interactive()) setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# load configuration (primary + optional private override)
 config <- read_yaml("config.yaml")
-# If a private config exists it overrides values from config.yaml
 private_cfg_path <- "config.private.yaml"
 if (file.exists(private_cfg_path)) {
   try({
     private_cfg <- read_yaml(private_cfg_path)
-    # simple shallow merge: replace top-level keys with private values
+    # shallow merge: top-level keys in private_cfg replace those in config
     for (k in names(private_cfg)) config[[k]] <- private_cfg[[k]]
     cat("Private config loaded (RScript/config.private.yaml)\n")
   }, silent = TRUE)
 } else {
   cat("No private config found (RScript/config.private.yaml) - using repo config.yaml\n")
 }
+
+# extract commonly used sub-configs for convenience
+orders <- config$parse_orders
+loc <- config$locale
+plot_cfg <- config$plot
+
+# helper that applies parsing orders by type and quiet=TRUE
+parse_datetime_safe <- function(x, type = "garmin_datetime") {
+  if (is.null(orders[[type]])) {
+    warning("no parse orders for type: ", type)
+    return(parse_date_time(x, quiet = TRUE))
+  }
+  parse_date_time(x, orders = orders[[type]], quiet = TRUE)
+}
+
+# locale object for sensor CSV imports
+sensor_locale <- locale(decimal_mark = loc$decimal_mark %||% ",")
 
 # --- 2. DATA CLEANING & LOADING ---
 # helper for recursive discovery of CSV files under data directory
@@ -47,15 +65,34 @@ is_sleep_csv <- function(path, mapping) {
   FALSE
 }
 
-is_sensor_csv <- function(path, temp_files) {
-  # normalize basename for matching
-  base <- canonical_basename(path)
-  if(any(base == canonical_basename(unlist(lapply(temp_files, function(f) f$path))))) return(TRUE)
-  hdr <- tryCatch(names(read.csv(path, nrows = 1, stringsAsFactors = FALSE, check.names = FALSE)),
+# helper to inspect a sensor CSV and return the matching temp_files entry (or NULL)
+detect_sensor_config <- function(path) {
+  base <- basename(path)
+  # explicit paths first
+  for (id in names(config$temp_files)) {
+    if (base == basename(config$temp_files[[id]]$path)) return(config$temp_files[[id]])
+  }
+  hdr <- tryCatch(names(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE)),
                   error = function(e) character(0))
-  any(sapply(temp_files, function(f) {
-    any(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)
-  }))
+  for (id in names(config$temp_files)) {
+    f <- config$temp_files[[id]]
+    if (all(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)) return(f)
+  }
+  NULL
+}
+
+is_sensor_csv <- function(path, temp_files) {
+  !is.null(detect_sensor_config(path))
+}
+
+get_sensor_file_info <- function(path) {
+  cfg <- detect_sensor_config(path)
+  if (is.null(cfg)) {
+    # fallback to first mapping if nothing matched
+    config$temp_files[[1]]
+  } else {
+    cfg
+  }
 }
 
 read_garmin_fixed <- function(path) {
@@ -92,6 +129,9 @@ trim_vector <- function(x) {
   x <- str_trim(as.character(x))
   x[x != "" & !is.na(x)]
 }
+
+# convert a timestamp to the corresponding "night" date by subtracting 12h
+night_date <- function(ts) as.Date(ts - hours(12))
 
 collapse_flags <- function(x) {
   vals <- sort(unique(trim_vector(x)))
@@ -370,10 +410,12 @@ explicit_sensor_raw <- unlist(lapply(config$temp_files, function(x) file.path(co
 explicit_sleep <- expand_explicit(explicit_sleep_raw, all_data_files)
 explicit_sensor <- expand_explicit(explicit_sensor_raw, all_data_files)
 
-# warn if explicit paths could not be located
-missing_explicit <- setdiff(c(explicit_sleep, explicit_sensor), all_data_files)
-if (length(missing_explicit) > 0) {
-  cat("Warning: explicit files listed in config not found under data_directory:\n", paste(missing_explicit, collapse="\n"), "\n")
+# warn if explicit paths listed in config aren't found under data_directory
+{
+  missing <- setdiff(c(explicit_sleep, explicit_sensor), all_data_files)
+  if (length(missing) > 0) {
+    message("Warning: explicit files listed in config not found under data_directory:\n", paste(missing, collapse="\n"))
+  }
 }
 
 all_sleep_files <- unique(c(explicit_sleep, sleep_candidates))
@@ -398,8 +440,8 @@ sleep_df_raw <- map_df(all_sleep_files, function(f) {
     mutate(Source_File = f,
            Source_Name = canonical_basename(f)) %>%
     mutate(Date = as.Date(!!sym(date_col)),
-           bedtime = parse_date_time(!!sym(mapping$garmin_bedtime), orders = c("H:M", "HM")),
-           waketime = parse_date_time(!!sym(mapping$garmin_waketime), orders = c("H:M", "HM"))) %>%
+           bedtime = parse_datetime_safe(!!sym(mapping$garmin_bedtime), type = "garmin_time"),
+           waketime = parse_datetime_safe(!!sym(mapping$garmin_waketime), type = "garmin_time")) %>%
     mutate(waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
            bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date)),
            bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
@@ -414,7 +456,7 @@ get_sensor_file_info <- function(path) {
     if (base == basename(config$temp_files[[id]]$path)) return(config$temp_files[[id]])
   }
   # otherwise, try header matching
-  hdr <- tryCatch(names(read_delim(path, delim = ",", n_max = 1, locale = locale(decimal_mark = ","), show_col_types = FALSE)),
+  hdr <- tryCatch(names(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE)),
                   error = function(e) character(0))
   for (id in names(config$temp_files)) {
     f <- config$temp_files[[id]]
@@ -427,9 +469,9 @@ get_sensor_file_info <- function(path) {
 # read all discovered sensor CSVs, track source file and attempt column renaming
 sensor_raw <- map_df(all_sensor_files, function(fp) {
   f_info <- get_sensor_file_info(fp)
-  read_delim(fp, delim = ",", locale = locale(decimal_mark = ","), show_col_types = FALSE) %>%
+  read_delim(fp, delim = ",", locale = sensor_locale, show_col_types = FALSE) %>%
     rename(timestamp = !!f_info$col_time, room_temp = !!f_info$col_temp, rel_hum = !!f_info$col_hum, abs_hum = `Abs Humidity(g/m³)`) %>%
-    mutate(timestamp = parse_date_time(timestamp, orders = c("d/m/Y H:M", "dmY HM", "Ymd HMS"))) %>%
+    mutate(timestamp = parse_datetime_safe(timestamp, type = "sensor_timestamp")) %>%
     mutate(Source_File = fp,
            Source_Name = canonical_basename(fp))
 })
@@ -462,6 +504,16 @@ apply_outlier_filter <- function(df, cols = c("room_temp","rel_hum","abs_hum"), 
 # Track dates removed by outlier filtering (both sensor and nightly stages)
 excluded_outlier_dates <- c()
 
+# helper for translating sensor column names to nightly-average equivalents
+map_sensor_to_nightly <- function(cols) {
+  sapply(cols, function(c) {
+    if(c == "room_temp") return("Avg_Temp")
+    if(c == "rel_hum") return("Avg_Rel_Hum")
+    if(c == "abs_hum") return("Avg_Abs_Hum")
+    c
+  }, USE.NAMES = FALSE)
+}
+
 if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
   cols_cfg <- if(!is.null(config$outlier_filter$columns)) unlist(config$outlier_filter$columns) else c("room_temp","rel_hum","abs_hum")
   method_cfg <- if(!is.null(config$outlier_filter$method)) config$outlier_filter$method else "iqr"
@@ -469,92 +521,97 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
   z_cfg <- if(!is.null(config$outlier_filter$z_threshold)) config$outlier_filter$z_threshold else 3
   stage_cfg <- if(!is.null(config$outlier_filter$apply_stage)) config$outlier_filter$apply_stage else "sensor"
   if(tolower(stage_cfg) == "sensor") {
-    cfg_cols_exist <- intersect(cols_cfg, names(sensor_raw))
-    # Keep a copy of the raw sensor data before filtering so we can detect nights that lost nightly averages
-    sensor_raw_before <- sensor_raw
+    # wrap temporary calculations in local scope to avoid polluting global namespace
+    local({
+      cfg_cols_exist <- intersect(cols_cfg, names(sensor_raw))
+      # Keep a copy of the raw sensor data before filtering so we can detect nights that lost nightly averages
+      sensor_raw_before <- sensor_raw
 
-    # Count per-night sensor readings and valid values before filtering (for configured cols)
-    sensor_before <- sensor_raw_before %>%
-      mutate(Date = as.Date(timestamp - hours(12))) %>%
-      group_by(Date) %>%
-      summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
-
-    n_before <- nrow(sensor_raw_before)
-    sensor_raw <- apply_outlier_filter(sensor_raw, cols_cfg, method_cfg, iqr_cfg, z_cfg)
-    n_after <- nrow(sensor_raw)
-
-    # Count valid values after filtering
-    sensor_after <- sensor_raw %>%
-      mutate(Date = as.Date(timestamp - hours(12))) %>%
-      group_by(Date) %>%
-      summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
-
-    # Identify dates where there were valid values before, but none after (for any configured column)
-    if(nrow(sensor_before) > 0) {
-      valid_before_mat <- sensor_before %>% select(Date, starts_with("valid_"))
-      valid_after_mat <- sensor_after %>% select(Date, starts_with("valid_"))
-
-      valid_before_mat$has_valid_before <- apply(valid_before_mat %>% select(-Date), 1, function(r) any(r > 0))
-      if(nrow(valid_after_mat) > 0) {
-        valid_after_mat$has_valid_after <- apply(valid_after_mat %>% select(-Date), 1, function(r) any(r > 0))
-      } else {
-        valid_after_mat <- tibble(Date = as.Date(character(0)), has_valid_after = logical(0))
-      }
-
-      merged_val <- valid_before_mat %>% left_join(valid_after_mat, by = "Date") %>% mutate(has_valid_after = ifelse(is.na(has_valid_after), FALSE, has_valid_after))
-      dates_lost_sensor <- merged_val %>% filter(has_valid_before == TRUE & has_valid_after == FALSE) %>% pull(Date)
-
-      # Extra check via nightly averages: if nightly avg existed before but is NA after, treat as outlier-removed
-      sensor_nightly_before <- sensor_raw_before %>%
+      # Count per-night sensor readings and valid values before filtering (for configured cols)
+      sensor_before <- sensor_raw_before %>%
         mutate(Date = as.Date(timestamp - hours(12))) %>%
         group_by(Date) %>%
-        summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
+        summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
 
-      sensor_nightly_after <- sensor_raw %>%
+      n_before <- nrow(sensor_raw_before)
+      sensor_raw <- apply_outlier_filter(sensor_raw, cols_cfg, method_cfg, iqr_cfg, z_cfg)
+      n_after <- nrow(sensor_raw)
+
+      # Count valid values after filtering
+      sensor_after <- sensor_raw %>%
         mutate(Date = as.Date(timestamp - hours(12))) %>%
         group_by(Date) %>%
-        summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
+        summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
 
-      # Determine nights where any nightly average existed before filtering but is NA/NaN after filtering
-      merged_nightly <- sensor_nightly_before %>% left_join(sensor_nightly_after, by = "Date", suffix = c("_before", "_after"))
+      # Identify dates where there were valid values before, but none after (for any configured column)
+      if(nrow(sensor_before) > 0) {
+        valid_before_mat <- sensor_before %>% select(Date, starts_with("valid_"))
+        valid_after_mat <- sensor_after %>% select(Date, starts_with("valid_"))
 
-      cols_to_check <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum")
-      cols_present <- intersect(cols_to_check, names(merged_nightly))
-
-      if(length(cols_present) > 0) {
-        lost_mat <- sapply(cols_present, function(col) {
-          before <- merged_nightly[[paste0(col, "_before")]]
-          after <- merged_nightly[[paste0(col, "_after")]]
-          (!is.na(before)) & (is.na(after) | is.nan(after))
-        })
-        # determine specific nights lost by average becoming NA/NaN
-        if(is.matrix(lost_mat)) {
-          lost_rows <- apply(lost_mat, 1, any)
+        valid_before_mat$has_valid_before <- apply(valid_before_mat %>% select(-Date), 1, function(r) any(r > 0))
+        if(nrow(valid_after_mat) > 0) {
+          valid_after_mat$has_valid_after <- apply(valid_after_mat %>% select(-Date), 1, function(r) any(r > 0))
         } else {
-          lost_rows <- as.logical(lost_mat)
+          valid_after_mat <- tibble(Date = as.Date(character(0)), has_valid_after = logical(0))
         }
-        nights_lost_by_avg <- merged_nightly$Date[which(lost_rows)]
-      } else {
-        nights_lost_by_avg <- as.Date(character(0))
+
+        merged_val <- valid_before_mat %>% left_join(valid_after_mat, by = "Date") %>% mutate(has_valid_after = ifelse(is.na(has_valid_after), FALSE, has_valid_after))
+        dates_lost_sensor <- merged_val %>% filter(has_valid_before == TRUE & has_valid_after == FALSE) %>% pull(Date)
+
+        # Extra check via nightly averages: if nightly avg existed before but is NA after, treat as outlier-removed
+        sensor_nightly_before <- sensor_raw_before %>%
+          mutate(Date = night_date(timestamp)) %>%
+          group_by(Date) %>%
+          summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
+
+        sensor_nightly_after <- sensor_raw %>%
+          mutate(Date = night_date(timestamp)) %>%
+          group_by(Date) %>%
+          summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
+
+        # Determine nights where any nightly average existed before filtering but is NA/NaN after filtering
+        merged_nightly <- sensor_nightly_before %>% left_join(sensor_nightly_after, by = "Date", suffix = c("_before", "_after"))
+
+        cols_to_check <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum")
+        cols_present <- intersect(cols_to_check, names(merged_nightly))
+
+        if(length(cols_present) > 0) {
+          lost_mat <- sapply(cols_present, function(col) {
+            before <- merged_nightly[[paste0(col, "_before")]]
+            after <- merged_nightly[[paste0(col, "_after")]]
+            (!is.na(before)) & (is.na(after) | is.nan(after))
+          })
+          # determine specific nights lost by average becoming NA/NaN
+          if(is.matrix(lost_mat)) {
+            lost_rows <- apply(lost_mat, 1, any)
+          } else {
+            lost_rows <- as.logical(lost_mat)
+          }
+          nights_lost_by_avg <- merged_nightly$Date[which(lost_rows)]
+        } else {
+          nights_lost_by_avg <- as.Date(character(0))
+        }
       }
-    }
-    # after per-night checks, combine with sensor-row losses
-    dates_to_mark <- unique(c(dates_lost_sensor, nights_lost_by_avg))
-    if(length(dates_to_mark) > 0) {
-      removed_dates_fmt <- format(dates_to_mark, "%d.%m.%Y")
-      excluded_outlier_dates <- unique(c(excluded_outlier_dates, removed_dates_fmt))
-      cat(sprintf("Outlier filter (sensor) removed data for nights (all values NA after filtering): %s\n", paste(removed_dates_fmt, collapse = ", ")))
-    }
+      # after per-night checks, combine with sensor-row losses
+      dates_to_mark <- unique(c(dates_lost_sensor, nights_lost_by_avg))
+      if(length(dates_to_mark) > 0) {
+        removed_dates_fmt <- format(dates_to_mark, "%d.%m.%Y")
+        excluded_outlier_dates <- unique(c(excluded_outlier_dates, removed_dates_fmt))
+        cat(sprintf("Outlier filter (sensor) removed data for nights (all values NA after filtering): %s\n", paste(removed_dates_fmt, collapse = ", ")))
+      }
+
+      # update global variables after local processing
+      sensor_raw <<- sensor_raw
+      excluded_outlier_dates <<- excluded_outlier_dates
+      cat(sprintf("Outlier filter enabled (sensor): removed %d sensor rows\n", n_before - n_after))
+    })
+  } else {
+    cat(sprintf("Outlier filter enabled but set to apply at '%s' stage\n", stage_cfg))
   }
-  
-  cat(sprintf("Outlier filter enabled (sensor): removed %d sensor rows\n", n_before - n_after))
-} else {
-  cat(sprintf("Outlier filter enabled but set to apply at '%s' stage\n", stage_cfg))
-}
 
 # build a per-night sensor summary (after any outlier filtering)
 sensor_summary <- sensor_raw %>%
-  mutate(Date = as.Date(timestamp - hours(12)),
+  mutate(Date = night_date(timestamp),
          Source_Name = canonical_basename(Source_File)) %>%
   group_by(Date) %>%
   summarise(
@@ -574,10 +631,11 @@ sensor_summary <- sensor_raw %>%
 sleep_complete <- sleep_df_raw %>%
   rename(Sleep_Score = !!sym(mapping$garmin_sleep_score), HRV = !!sym(mapping$garmin_hrv), RHR = !!sym(mapping$garmin_rhr))
 
-sleep_filtered <- sleep_complete %>% 
-  filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR))
+# drop rows with missing critical sleep metrics immediately
 
-temp_mapped <- sleep_filtered %>% 
+# nightly mapping: compute per-night sensor averages and join calendar & sensor summaries
+temp_mapped <- sleep_complete %>% 
+  filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
   rowwise() %>% 
   mutate(Avg_Temp = mean(sensor_raw$room_temp[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T),
          Avg_Rel_Hum = mean(sensor_raw$rel_hum[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T),
@@ -593,13 +651,8 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
   stage_cfg <- if(!is.null(config$outlier_filter$apply_stage)) config$outlier_filter$apply_stage else "sensor"
   if(tolower(stage_cfg) == "nightly") {
     cols_nightly <- if(!is.null(config$outlier_filter$columns)) unlist(config$outlier_filter$columns) else c("room_temp","rel_hum","abs_hum")
-    # Map sensor column names to nightly average column names
-    cols_nightly_mapped <- sapply(cols_nightly, function(c) {
-      if(c == "room_temp") return("Avg_Temp")
-      if(c == "rel_hum") return("Avg_Rel_Hum")
-      if(c == "abs_hum") return("Avg_Abs_Hum")
-      return(c)
-    })
+    # Map sensor column names to nightly average column names using helper
+    cols_nightly_mapped <- map_sensor_to_nightly(cols_nightly)
     method_cfg <- if(!is.null(config$outlier_filter$method)) config$outlier_filter$method else "iqr"
     iqr_cfg <- if(!is.null(config$outlier_filter$iqr_multiplier)) config$outlier_filter$iqr_multiplier else 1.5
     z_cfg <- if(!is.null(config$outlier_filter$z_threshold)) config$outlier_filter$z_threshold else 3
@@ -712,7 +765,7 @@ cat("===========================================================\n\n")
 
 # --- OUTPUT: DESCRIPTIVE STATISTICS ---
 sensor_nightly_raw <- sensor_raw %>%
-  mutate(Date = as.Date(timestamp - hours(12))) %>% 
+  mutate(Date = night_date(timestamp)) %>% 
   group_by(Date) %>%
   summarise(Avg_Temp = mean(room_temp, na.rm=T), Avg_Rel_Hum = mean(rel_hum, na.rm=T), Avg_Abs_Hum = mean(abs_hum, na.rm=T), .groups = 'drop')
 
@@ -734,15 +787,19 @@ for(v_name in names(room_vars)) {
 }
 
 # --- 4. DASHBOARD DATAFRAME (TRANSPOSED) ---
+# Build a transposed dashboard where rows are Metrics (incl. Sensor+Flags)
+# and columns are Date strings. Filter out missing Date rows first.
 dashboard_df <- final_data_viz %>%
-  select(Date, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
-  pivot_longer(cols = -Date, names_to = "Metric", values_to = "Value") %>%
+  filter(!is.na(Date)) %>%
+  select(Date, Sensor, Flags, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y")) %>%
+  # ensure a common type for pivoting (character) to avoid type-combine errors
+  mutate(across(-c(Date, Date_Str), ~ as.character(.x))) %>%
+  pivot_longer(cols = -c(Date, Date_Str), names_to = "Metric", values_to = "Value") %>%
   select(-Date) %>%
   pivot_wider(names_from = Date_Str, values_from = Value)
 
-cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df)\n\n")
-#print(dashboard_df)
+cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df) — transponiert mit Sensor+Flags\n\n")
 
 
 # --- 5. IMPACT ANALYSIS & OPTIMA ---
@@ -795,8 +852,13 @@ cat("===========================================================\n")
 
 # --- 6. INDIVIDUAL TIMELINE PLOTS ---
 metric_list <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
-metric_labels <- c("Room Temp (°C)", "Rel. Humidity (%)", "Abs. Humidity (g/m³)", "Sleep Score (pts)", "HRV (ms)", "RHR (bpm)")
-metric_colors <- c("#e67e22", "#3498db", "#9b59b6", "#27ae60", "#2980b9", "#c0392b")
+# derive labels/colors from configuration, with fallbacks
+metric_labels <- unname(sapply(metric_list, function(m) {
+  plot_cfg$metric_labels[[m]] %||% m
+}))
+metric_colors <- unname(sapply(metric_list, function(m) {
+  plot_cfg$metric_colors[[m]] %||% "black"
+}))
 
 for(i in seq_along(metric_list)) {
   m <- metric_list[i]

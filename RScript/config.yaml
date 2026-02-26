@@ -1,5 +1,29 @@
 # --- GLOBAL PATH SETTINGS ---
+# base directory containing dated subfolders with CSV exports
+# (usually kept at project root/data)
 data_directory: "../data"
+
+# --- PARSING SETTINGS ---
+# lists of orders passed to lubridate::parse_date_time
+parse_orders:
+  garmin_datetime:
+    - "Ymd HMS"
+    - "Ymd HM"
+    - "Y-m-d H:M:S"
+    - "Y-m-d H:M"
+    - "Y-m-d"
+  garmin_time:
+    - "H:M"
+    - "HM"
+  sensor_timestamp:
+    - "d/m/Y H:M"
+    - "dmY HM"
+    - "Ymd HMS"
+
+# locale settings for CSV imports
+locale:
+  decimal_mark: ","
+
 
 # scan behaviour: if recursive is true, every CSV under data_directory (subfolders included)
 # will be inspected. Useful when sensor or sleep files are placed in date-named subfolders.
@@ -77,4 +101,22 @@ outlier_filter:
   z_threshold: 3
   apply_stage: "sensor" # "sensor" or "nightly"
   columns: ["room_temp", "rel_hum", "abs_hum"]
+
+# --- PLOTTING / VISUALIZATION OPTIONS ---
+# colors and labels for metrics used in plots.  Modify as desired.
+plot:
+  metric_colors:
+    room_temp: "#ff7f0e"    # orange
+    rel_hum: "#1f77b4"      # blue
+    abs_hum: "#2ca02c"      # green
+    Sleep_Score: "#9b59b6"  # purple
+    HRV: "#27ae60"          # green
+    RHR: "#c0392b"          # red
+  metric_labels:
+    room_temp: "Room temperature (°C)"
+    rel_hum: "Relative humidity (%)"
+    abs_hum: "Absolute humidity (g/m³)"
+    Sleep_Score: "Sleep Score (pts)"
+    HRV: "HRV (ms)"
+    RHR: "RHR (bpm)"
 
