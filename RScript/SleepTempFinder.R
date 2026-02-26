@@ -40,7 +40,11 @@ canonical_basename <- function(path) {
 is_sleep_csv <- function(path, mapping) {
   hdr <- tryCatch(names(read.csv(path, nrows = 1, stringsAsFactors = FALSE, check.names = FALSE)),
                   error = function(e) character(0))
-  mapping$garmin_date %in% hdr
+  # primary check: configured date column
+  if(mapping$garmin_date %in% hdr) return(TRUE)
+  # fallback: presence of both bedtime and waketime columns
+  if(mapping$garmin_bedtime %in% hdr && mapping$garmin_waketime %in% hdr) return(TRUE)
+  FALSE
 }
 
 is_sensor_csv <- function(path, temp_files) {
@@ -379,10 +383,21 @@ mapping <- config$column_names
 
 # read sleep data, track source file and canonical name per row
 sleep_df_raw <- map_df(all_sleep_files, function(f) {
-  read_garmin_fixed(f) %>%
+  df <- read_garmin_fixed(f)
+  hdr <- names(df)
+  # determine which column to use for Date
+  date_col <- mapping$garmin_date
+  if(!(date_col %in% hdr)) {
+    alt <- hdr[str_detect(hdr, regex("^Sleep Score", ignore_case = TRUE))]
+    if(length(alt) == 1) {
+      date_col <- alt[[1]]
+      cat(sprintf("Warning: using alternate date column '%s' for file %s\n", date_col, f))
+    }
+  }
+  df %>%
     mutate(Source_File = f,
            Source_Name = canonical_basename(f)) %>%
-    mutate(Date = as.Date(!!sym(mapping$garmin_date)),
+    mutate(Date = as.Date(!!sym(date_col)),
            bedtime = parse_date_time(!!sym(mapping$garmin_bedtime), orders = c("H:M", "HM")),
            waketime = parse_date_time(!!sym(mapping$garmin_waketime), orders = c("H:M", "HM"))) %>%
     mutate(waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
@@ -536,8 +551,6 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 } else {
   cat(sprintf("Outlier filter enabled but set to apply at '%s' stage\n", stage_cfg))
 }
-}
-
 
 # build a per-night sensor summary (after any outlier filtering)
 sensor_summary <- sensor_raw %>%
@@ -552,13 +565,6 @@ sensor_summary <- sensor_raw %>%
     Valid_Rel_Hum = sum(!is.na(rel_hum)),
     Valid_Abs_Hum = sum(!is.na(abs_hum)),
     .groups = "drop"
-  )
-
-# create reviewable per-night summary (final state after any nightly filtering)
-nightly_review_df <- temp_mapped %>%
-  mutate(
-    Sleep_Source = Source_File,
-    Sensor_Sources = map_chr(Sensor_Files, ~ paste(.x, collapse = "; "))
   )
 
 
@@ -619,11 +625,9 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 nightly_review_df <- temp_mapped %>%
   mutate(
     Sleep_Source = Source_File,
-    Sleep_Name = {
-      nm <- canonical_basename(Source_File)
-      if (str_detect(nm, regex("schlaf", ignore_case = TRUE))) nm <- "Sleep"
-      nm
-    },
+    Sleep_Name = ifelse(str_detect(canonical_basename(Source_File), regex("schlaf", ignore_case = TRUE)),
+                         "Sleep",
+                         canonical_basename(Source_File)),
     Sensor_Sources = map_chr(Sensor_Files, ~ paste(.x, collapse = "; ")),
     Sensor_Names = map_chr(Sensor_Names, ~ paste(.x, collapse = "; "))
   )
