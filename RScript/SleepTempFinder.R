@@ -621,6 +621,7 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
     cat(sprintf("Outlier filter enabled but set to apply at '%s' stage\n", stage_cfg))
   }
   })
+}
 
 # build a per-night sensor summary (after any outlier filtering)
 sensor_summary <- sensor_raw %>%
