@@ -1,6 +1,10 @@
 # --- GLOBAL PATH SETTINGS ---
 data_directory: "../data"
 
+# scan behaviour: if recursive is true, every CSV under data_directory (subfolders included)
+# will be inspected. Useful when sensor or sleep files are placed in date-named subfolders.
+scan_recursive: true
+
 # --- COLUMN MAPPING ---
 column_names:
   garmin_date: "Sleep Score 4 Wochen"
@@ -17,6 +21,10 @@ column_names:
   garmin_quality: "Qualität"
 
 # --- SENSOR & FILE INVENTORY ---
+# sensor definitions are used to rename columns when reading CSVs.  The
+# file path is only needed for explicit mapping; any CSV under data_directory
+# with matching column headers will also be ingested automatically (recursively
+# if scan_recursive is true).
 temp_files:
   FlorianZimmerSensor: 
     path: "ThermometerZimmerFlorian_data.csv"
@@ -34,6 +42,10 @@ quality_mapping:
 usage_timeline:
   - { file_id: "FlorianZimmerSensor", start: "2020-01-01", end: "2030-12-31" }
 
+# list of Garmin sleep exports; if omitted or incomplete the script will
+# also scan all CSVs under data_directory and classify them by header.
+# canonicalization: filenames are stripped of trailing " (1)" etc. and any
+# name containing "schlaf" becomes simply "Sleep" in summaries.
 sleep_data_sources: ["Schlaf(5).csv"]
 
 # --- CALENDAR SOURCE (SENSOR & FLAGS) ---

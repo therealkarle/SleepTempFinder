@@ -1,5 +1,7 @@
 ## Example private config - DO NOT COMMIT actual secrets
 # Copy this to 'config.private.yaml' and fill with your private values
+# you can optionally override scan behavior
+#scan_recursive: true
 
 calendar_source:
   enabled: true
