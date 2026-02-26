@@ -1,3 +1,19 @@
+# SleepTempFinder.R
+# Primary analysis script: ingest Garmin sleep exports + room sensor CSVs,
+# align on sleep periods, compute nightly averages, apply filters, and produce
+# statistics & plots.
+#
+# Changes since original version:
+#   * centralized date/time parsing orders via config
+#   * added locale configuration for sensor imports
+#   * moved plot colors/labels into config and derived vectors
+#   * tightened scope of intermediate variables using local()
+#   * removed obsolete dataframes and inline simple transforms
+#   * unified sensor header detection/lookup helpers
+#   * added dry-run flag to suppress plotting
+#   * added utility helpers (parse_datetime_safe, night_date, map_sensor_to_nightly)
+#   * updated config.yaml with new sections (parse_orders, locale, plot)
+#
 # --- 1. ENVIRONMENT SETUP ---
 if (!require("rstudioapi")) install.packages("rstudioapi")
 pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales")
@@ -26,6 +42,11 @@ if (file.exists(private_cfg_path)) {
 orders <- config$parse_orders
 loc <- config$locale
 plot_cfg <- config$plot
+
+# command-line arguments support (e.g. dry run)
+args <- commandArgs(trailingOnly = TRUE)
+dry_run <- "--dry-run" %in% args
+if(dry_run) cat("*** dry-run mode enabled (plots suppressed) ***\n")
 
 # helper that applies parsing orders by type and quiet=TRUE
 parse_datetime_safe <- function(x, type = "garmin_datetime") {
@@ -870,7 +891,7 @@ for(i in seq_along(metric_list)) {
     theme_minimal(base_size = 12) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
           plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
-  print(p)
+  if(!dry_run) print(p)
 }
 
 
@@ -891,7 +912,7 @@ for(env_name in names(env_analysis_vars)) {
       p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
         annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
     }
-    print(p)
+    if(!dry_run) print(p)
   }
 }
 
