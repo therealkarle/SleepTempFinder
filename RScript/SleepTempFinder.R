@@ -486,8 +486,9 @@ sensor_raw <- map_df(all_sensor_files, function(fp) {
            Source_Name = canonical_basename(fp))
 })
 
-calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calendar_parser)
-calendar_daily <- apply_calendar_three_day_rule(calendar_daily_raw, config$calendar_assignment)
+calendar_daily <- apply_calendar_three_day_rule(
+  load_calendar_daily(config$calendar_source, config$calendar_parser),
+  config$calendar_assignment)
 
 # --- OUTLIER FILTERING (optional: configured in config.yaml) ---
 apply_outlier_filter <- function(df, cols = c("room_temp","rel_hum","abs_hum"), method = "iqr", iqr_mult = 1.5, z_thresh = 3) {
@@ -525,7 +526,8 @@ map_sensor_to_nightly <- function(cols) {
 }
 
 if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
-  cols_cfg <- if(!is.null(config$outlier_filter$columns)) unlist(config$outlier_filter$columns) else c("room_temp","rel_hum","abs_hum")
+  local({
+    cols_cfg <- if(!is.null(config$outlier_filter$columns)) unlist(config$outlier_filter$columns) else c("room_temp","rel_hum","abs_hum")
   method_cfg <- if(!is.null(config$outlier_filter$method)) config$outlier_filter$method else "iqr"
   iqr_cfg <- if(!is.null(config$outlier_filter$iqr_multiplier)) config$outlier_filter$iqr_multiplier else 1.5
   z_cfg <- if(!is.null(config$outlier_filter$z_threshold)) config$outlier_filter$z_threshold else 3
@@ -618,6 +620,7 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
   } else {
     cat(sprintf("Outlier filter enabled but set to apply at '%s' stage\n", stage_cfg))
   }
+  })
 
 # build a per-night sensor summary (after any outlier filtering)
 sensor_summary <- sensor_raw %>%
