@@ -384,63 +384,52 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
 }
 
 # determine which files under data_directory will be used
-all_data_files <- list_csv_files(config$data_directory, recursive = isTRUE(config$scan_recursive))
-cat(sprintf("Found %d CSV file(s) under %s (recursive=%s)\n", length(all_data_files), config$data_directory, isTRUE(config$scan_recursive)))
+classification <- local({
+  all_data_files <- list_csv_files(config$data_directory, recursive = isTRUE(config$scan_recursive))
+  cat(sprintf("Found %d CSV file(s) under %s (recursive=%s)\n", length(all_data_files), config$data_directory, isTRUE(config$scan_recursive)))
 
-# classify discovered files
-sleep_candidates <- all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
-sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, temp_files = config$temp_files)]
-unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
-cat(sprintf("  sleep candidates: %d\n", length(sleep_candidates)))
-if(length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
-# show canonical names
-if(length(sleep_candidates) > 0) {
-  cat("    canonical: ", paste(unique(canonical_basename(sleep_candidates)), collapse=", "), "\n")
-}
-cat(sprintf("  sensor candidates: %d\n", length(sensor_candidates)))
-if(length(sensor_candidates) > 0) cat(paste0("    ", sensor_candidates, collapse="\n"), "\n")
-if(length(sensor_candidates) > 0) {
-  cat("    canonical: ", paste(unique(canonical_basename(sensor_candidates)), collapse=", "), "\n")
-}
-if (length(unclassified_files) > 0) {
-  cat("Unclassified files (neither sleep nor sensor detected):\n", paste(unclassified_files, collapse = "\n"), "\n")
-}
-
-# explicit lists from config are still respected but merged with discoveries
-expand_explicit <- function(explicit_paths, discovered) {
-  out <- character(0)
-  for(p in explicit_paths) {
-    if(p %in% discovered) {
-      out <- c(out, p)
-    } else {
-      base <- basename(p)
-      matches <- discovered[basename(discovered) == base]
-      if(length(matches) > 0) {
-        out <- c(out, matches)
-      } else {
-        out <- c(out, p)
-      }
-    }
+  # classify discovered files
+  sleep_candidates <- all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
+  sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, temp_files = config$temp_files)]
+  unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
+  cat(sprintf("  sleep candidates: %d\n", length(sleep_candidates)))
+  if(length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
+  # show canonical names
+  if(length(sleep_candidates) > 0) {
+    cat("    canonical: ", paste(unique(canonical_basename(sleep_candidates)), collapse=", "), "\n")
   }
-  unique(out)
-}
+  cat(sprintf("  sensor candidates: %d\n", length(sensor_candidates)))
+  if(length(sensor_candidates) > 0) cat(paste0("    ", sensor_candidates, collapse="\n"), "\n")
+  if(length(sensor_candidates) > 0) {
+    cat("    canonical: ", paste(unique(canonical_basename(sensor_candidates)), collapse=", "), "\n")
+  }
+  if (length(unclassified_files) > 0) {
+    cat("Unclassified files (neither sleep nor sensor detected):\n", paste(unclassified_files, collapse = "\n"), "\n")
+  }
 
-explicit_sleep_raw <- file.path(config$data_directory, config$sleep_data_sources)
-explicit_sensor_raw <- unlist(lapply(config$temp_files, function(x) file.path(config$data_directory, x$path)))
+  # expand explicit paths and merge with discovered names
+  explicit_sleep_raw <- file.path(config$data_directory, config$sleep_data_sources)
+  explicit_sensor_raw <- unlist(lapply(config$temp_files, function(x) file.path(config$data_directory, x$path)))
+  explicit_sleep <- expand_explicit(explicit_sleep_raw, all_data_files)
+  explicit_sensor <- expand_explicit(explicit_sensor_raw, all_data_files)
 
-explicit_sleep <- expand_explicit(explicit_sleep_raw, all_data_files)
-explicit_sensor <- expand_explicit(explicit_sensor_raw, all_data_files)
-
-# warn if explicit paths listed in config aren't found under data_directory
-{
+  # warn about missing explicit files
   missing <- setdiff(c(explicit_sleep, explicit_sensor), all_data_files)
   if (length(missing) > 0) {
     message("Warning: explicit files listed in config not found under data_directory:\n", paste(missing, collapse="\n"))
   }
-}
 
-all_sleep_files <- unique(c(explicit_sleep, sleep_candidates))
-all_sensor_files <- unique(c(explicit_sensor, sensor_candidates))
+  list(
+    all_sleep_files = unique(c(explicit_sleep, sleep_candidates)),
+    all_sensor_files = unique(c(explicit_sensor, sensor_candidates))
+  )
+})
+
+all_sleep_files <- classification$all_sleep_files
+all_sensor_files <- classification$all_sensor_files
+
+# explicit lists from config are still respected but merged with discoveries
+# (handled above in the classification block)
 
 mapping <- config$column_names
 
