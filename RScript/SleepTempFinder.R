@@ -503,9 +503,8 @@ sensor_raw <- map_df(all_sensor_files, function(fp) {
            Source_Name = canonical_basename(fp))
 })
 
-calendar_daily <- apply_calendar_three_day_rule(
-  load_calendar_daily(config$calendar_source, config$calendar_parser),
-  config$calendar_assignment)
+calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calendar_parser)
+calendar_daily <- apply_calendar_three_day_rule(calendar_daily_raw, config$calendar_assignment)
 
 # --- OUTLIER FILTERING (optional: configured in config.yaml) ---
 apply_outlier_filter <- function(df, cols = c("room_temp","rel_hum","abs_hum"), method = "iqr", iqr_mult = 1.5, z_thresh = 3) {
