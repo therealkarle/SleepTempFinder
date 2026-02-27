@@ -1,5 +1,33 @@
 # --- GLOBAL PATH SETTINGS ---
+# base directory containing dated subfolders with CSV exports
+# (usually kept at project root/data)
 data_directory: "../data"
+
+# --- PARSING SETTINGS ---
+# lists of orders passed to lubridate::parse_date_time
+parse_orders:
+  garmin_datetime:
+    - "Ymd HMS"
+    - "Ymd HM"
+    - "Y-m-d H:M:S"
+    - "Y-m-d H:M"
+    - "Y-m-d"
+  garmin_time:
+    - "H:M"
+    - "HM"
+  sensor_timestamp:
+    - "d/m/Y H:M"
+    - "dmY HM"
+    - "Ymd HMS"
+
+# locale settings for CSV imports
+locale:
+  decimal_mark: ","
+
+
+# scan behaviour: if recursive is true, every CSV under data_directory (subfolders included)
+# will be inspected. Useful when sensor or sleep files are placed in date-named subfolders.
+scan_recursive: true
 
 # --- COLUMN MAPPING ---
 column_names:
@@ -17,6 +45,10 @@ column_names:
   garmin_quality: "Qualität"
 
 # --- SENSOR & FILE INVENTORY ---
+# sensor definitions are used to rename columns when reading CSVs.  The
+# file path is only needed for explicit mapping; any CSV under data_directory
+# with matching column headers will also be ingested automatically (recursively
+# if scan_recursive is true).
 temp_files:
   FlorianZimmerSensor: 
     path: "ThermometerZimmerFlorian_data.csv"
@@ -34,6 +66,10 @@ quality_mapping:
 usage_timeline:
   - { file_id: "FlorianZimmerSensor", start: "2020-01-01", end: "2030-12-31" }
 
+# list of Garmin sleep exports; if omitted or incomplete the script will
+# also scan all CSVs under data_directory and classify them by header.
+# canonicalization: filenames are stripped of trailing " (1)" etc. and any
+# name containing "schlaf" becomes simply "Sleep" in summaries.
 sleep_data_sources: ["Schlaf(5).csv"]
 
 # --- CALENDAR SOURCE (SENSOR & FLAGS) ---
@@ -65,4 +101,22 @@ outlier_filter:
   z_threshold: 3
   apply_stage: "sensor" # "sensor" or "nightly"
   columns: ["room_temp", "rel_hum", "abs_hum"]
+
+# --- PLOTTING / VISUALIZATION OPTIONS ---
+# colors and labels for metrics used in plots.  Modify as desired.
+plot:
+  metric_colors:
+    room_temp: "#ff7f0e"    # orange
+    rel_hum: "#1f77b4"      # blue
+    abs_hum: "#2ca02c"      # green
+    Sleep_Score: "#9b59b6"  # purple
+    HRV: "#27ae60"          # green
+    RHR: "#c0392b"          # red
+  metric_labels:
+    room_temp: "Room temperature (°C)"
+    rel_hum: "Relative humidity (%)"
+    abs_hum: "Absolute humidity (g/m³)"
+    Sleep_Score: "Sleep Score (pts)"
+    HRV: "HRV (ms)"
+    RHR: "RHR (bpm)"
 
