@@ -110,7 +110,7 @@ detect_sensor_config <- function(path) {
   for (id in names(config$temp_files)) {
     if (base == basename(config$temp_files[[id]]$path)) return(config$temp_files[[id]])
   }
-  hdr <- tryCatch(names(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE)),
+  hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
                   error = function(e) character(0))
   for (id in names(config$temp_files)) {
     f <- config$temp_files[[id]]
@@ -483,7 +483,7 @@ get_sensor_file_info <- function(path) {
     if (base == basename(config$temp_files[[id]]$path)) return(config$temp_files[[id]])
   }
   # otherwise, try header matching
-  hdr <- tryCatch(names(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE)),
+  hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
                   error = function(e) character(0))
   for (id in names(config$temp_files)) {
     f <- config$temp_files[[id]]
