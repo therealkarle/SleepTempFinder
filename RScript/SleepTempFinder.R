@@ -74,7 +74,24 @@ canonical_basename <- function(path) {
   b <- sub("\\s*\\(\\d+\\)(?=\\.[^.]+$)", "", b, perl = TRUE)
   b
 }
-
+# helper used when config lists explicit files that might be renamed copies
+expand_explicit <- function(explicit_paths, discovered) {
+  out <- character(0)
+  for (p in explicit_paths) {
+    if (p %in% discovered) {
+      out <- c(out, p)
+    } else {
+      base <- basename(p)
+      matches <- discovered[basename(discovered) == base]
+      if (length(matches) > 0) {
+        out <- c(out, matches)
+      } else {
+        out <- c(out, p)
+      }
+    }
+  }
+  unique(out)
+}
 # classify a CSV by header row using configured column mappings
 is_sleep_csv <- function(path, mapping) {
   hdr <- tryCatch(names(read.csv(path, nrows = 1, stringsAsFactors = FALSE, check.names = FALSE)),
