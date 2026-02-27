@@ -496,7 +496,7 @@ get_sensor_file_info <- function(path) {
 # read all discovered sensor CSVs, track source file and attempt column renaming
 sensor_raw <- map_df(all_sensor_files, function(fp) {
   f_info <- get_sensor_file_info(fp)
-  read_delim(fp, delim = ",", locale = sensor_locale, show_col_types = FALSE) %>%
+  suppressWarnings(read_delim(fp, delim = ",", locale = sensor_locale, show_col_types = FALSE)) %>%
     rename(timestamp = !!f_info$col_time, room_temp = !!f_info$col_temp, rel_hum = !!f_info$col_hum, abs_hum = `Abs Humidity(g/m³)`) %>%
     mutate(timestamp = parse_datetime_safe(timestamp, type = "sensor_timestamp")) %>%
     mutate(Source_File = fp,
@@ -827,7 +827,7 @@ dashboard_df <- final_data_viz %>%
   mutate(across(-c(Date, Date_Str), ~ as.character(.x))) %>%
   pivot_longer(cols = -c(Date, Date_Str), names_to = "Metric", values_to = "Value") %>%
   select(-Date) %>%
-  pivot_wider(names_from = Date_Str, values_from = Value)
+  pivot_wider(names_from = Date_Str, values_from = Value, values_fn = list)
 
 cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df) — transponiert mit Sensor+Flags\n\n")
 
