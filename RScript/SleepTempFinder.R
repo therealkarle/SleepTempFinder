@@ -38,10 +38,18 @@ if (file.exists(private_cfg_path)) {
   cat("No private config found (RScript/config.private.yaml) - using repo config.yaml\n")
 }
 
+# back-compat: older configs used 'temp_files'; rename to 'sensor_files'
+if (is.null(config$sensor_files) && !is.null(config$temp_files)) {
+  config$sensor_files <- config$temp_files
+  cat("Config warning: 'temp_files' renamed to 'sensor_files' for clarity\n")
+}
+
 # extract commonly used sub-configs for convenience
 orders <- config$parse_orders
 loc <- config$locale
 plot_cfg <- config$plot
+# matching padding in minutes (expand bedtime..waketime by this amount each side)
+matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
 # command-line arguments support (e.g. dry run)
 args <- commandArgs(trailingOnly = TRUE)
@@ -54,7 +62,15 @@ parse_datetime_safe <- function(x, type = "garmin_datetime") {
     warning("no parse orders for type: ", type)
     return(parse_date_time(x, quiet = TRUE))
   }
-  parse_date_time(x, orders = orders[[type]], quiet = TRUE)
+  res <- parse_date_time(x, orders = orders[[type]], quiet = TRUE)
+  # warn when parsing yields NA values so we can diagnose missing timestamps
+  if (length(res) > 0 && any(is.na(res))) {
+    failed <- which(is.na(res))
+    sample_vals <- unique(head(as.character(x[failed]), 5))
+    warning(sprintf("parse_datetime_safe: %d values failed to parse for type '%s'. Examples: %s",
+                    length(failed), type, paste(sample_vals, collapse = "; ")))
+  }
+  res
 }
 
 # locale object for sensor CSV imports
@@ -103,23 +119,23 @@ is_sleep_csv <- function(path, mapping) {
   FALSE
 }
 
-# helper to inspect a sensor CSV and return the matching temp_files entry (or NULL)
+# helper to inspect a sensor CSV and return the matching sensor_files entry (or NULL)
 detect_sensor_config <- function(path) {
   base <- basename(path)
   # explicit paths first
-  for (id in names(config$temp_files)) {
-    if (base == basename(config$temp_files[[id]]$path)) return(config$temp_files[[id]])
+  for (id in names(config$sensor_files)) {
+    if (base == basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
   }
   hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
                   error = function(e) character(0))
-  for (id in names(config$temp_files)) {
-    f <- config$temp_files[[id]]
+  for (id in names(config$sensor_files)) {
+    f <- config$sensor_files[[id]]
     if (all(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)) return(f)
   }
   NULL
 }
 
-is_sensor_csv <- function(path, temp_files) {
+is_sensor_csv <- function(path, sensor_files) {
   !is.null(detect_sensor_config(path))
 }
 
@@ -127,7 +143,7 @@ get_sensor_file_info <- function(path) {
   cfg <- detect_sensor_config(path)
   if (is.null(cfg)) {
     # fallback to first mapping if nothing matched
-    config$temp_files[[1]]
+    config$sensor_files[[1]]
   } else {
     cfg
   }
@@ -407,7 +423,7 @@ classification <- local({
 
   # classify discovered files
   sleep_candidates <- all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
-  sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, temp_files = config$temp_files)]
+  sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, sensor_files = config$sensor_files)]
   unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
   cat(sprintf("  sleep candidates: %d\n", length(sleep_candidates)))
   if(length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
@@ -426,7 +442,7 @@ classification <- local({
 
   # expand explicit paths and merge with discovered names
   explicit_sleep_raw <- file.path(config$data_directory, config$sleep_data_sources)
-  explicit_sensor_raw <- unlist(lapply(config$temp_files, function(x) file.path(config$data_directory, x$path)))
+  explicit_sensor_raw <- unlist(lapply(config$sensor_files, function(x) file.path(config$data_directory, x$path)))
   explicit_sleep <- expand_explicit(explicit_sleep_raw, all_data_files)
   explicit_sensor <- expand_explicit(explicit_sensor_raw, all_data_files)
 
@@ -463,34 +479,51 @@ sleep_df_raw <- map_df(all_sleep_files, function(f) {
       cat(sprintf("Warning: using alternate date column '%s' for file %s\n", date_col, f))
     }
   }
-  df %>%
-    mutate(Source_File = f,
-           Source_Name = canonical_basename(f)) %>%
-    mutate(Date = as.Date(!!sym(date_col)),
-           bedtime = parse_datetime_safe(!!sym(mapping$garmin_bedtime), type = "garmin_time"),
-           waketime = parse_datetime_safe(!!sym(mapping$garmin_waketime), type = "garmin_time")) %>%
-    mutate(waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
-           bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date)),
-           bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
-    mutate(across(any_of(unlist(mapping[4:length(mapping)])), clean_val_final))
+    df %>%
+      mutate(Source_File = f,
+        Source_Name = canonical_basename(f)) %>%
+      mutate(Date = as.Date(!!sym(date_col)),
+        bedtime = parse_datetime_safe(!!sym(mapping$garmin_bedtime), type = "garmin_time"),
+        waketime = parse_datetime_safe(!!sym(mapping$garmin_waketime), type = "garmin_time")) %>%
+      # align parsed times to the same calendar Date, then detect and correct
+      # cases where columns were mis-parsed (e.g. duration '7h 40min' parsed as 07:40)
+      mutate(waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
+        bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date))) %>%
+      # if bedtime appears to be a morning time (<=12) while waketime is an evening time (>12)
+      # and bedtime < waketime, it's likely the two were swapped during parsing; swap them back
+      mutate(
+        .bedtime_orig = bedtime,
+        .waketime_orig = waketime,
+        .swap_flag = (!is.na(.bedtime_orig) & !is.na(.waketime_orig) &
+            (hour(.bedtime_orig) <= 12 & hour(.waketime_orig) > 12 & .bedtime_orig < .waketime_orig))
+      ) %>%
+      mutate(
+        bedtime = if_else(.swap_flag, .waketime_orig, .bedtime_orig),
+        waketime = if_else(.swap_flag, .bedtime_orig, .waketime_orig)
+      ) %>%
+      mutate(bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
+      select(-.bedtime_orig, -.waketime_orig, -.swap_flag) %>%
+      mutate(across(any_of(unlist(mapping[4:length(mapping)])), clean_val_final))
 })
 
 # helper: choose sensor file configuration based on path or header
+# (this mirrors detect_sensor_config but is kept here for backwards
+# compatibility with older versions of the script)
 get_sensor_file_info <- function(path) {
   base <- basename(path)
   # first try to match explicit path in config
-  for (id in names(config$temp_files)) {
-    if (base == basename(config$temp_files[[id]]$path)) return(config$temp_files[[id]])
+  for (id in names(config$sensor_files)) {
+    if (base == basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
   }
   # otherwise, try header matching
   hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
                   error = function(e) character(0))
-  for (id in names(config$temp_files)) {
-    f <- config$temp_files[[id]]
+  for (id in names(config$sensor_files)) {
+    f <- config$sensor_files[[id]]
     if (all(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)) return(f)
   }
   # fallback to first mapping
-  config$temp_files[[1]]
+  config$sensor_files[[1]]
 }
 
 # read all discovered sensor CSVs, track source file and attempt column renaming
@@ -503,8 +536,44 @@ sensor_raw <- map_df(all_sensor_files, function(fp) {
            Source_Name = canonical_basename(fp))
 })
 
+# Diagnostic summary per sensor file: count rows, NA timestamps, first/last timestamp
+if (exists("sensor_raw") && nrow(sensor_raw) > 0) {
+  sensor_stats <- sensor_raw %>%
+    group_by(Source_File) %>%
+    summarise(
+      N_Rows = n(),
+      N_NA_Timestamp = sum(is.na(timestamp)),
+      First_TS = if(all(is.na(timestamp))) as.POSIXct(NA) else min(timestamp, na.rm = TRUE),
+      Last_TS = if(all(is.na(timestamp))) as.POSIXct(NA) else max(timestamp, na.rm = TRUE),
+      .groups = 'drop'
+    )
+
+  cat("Sensor files read:\n")
+  for(i in seq_len(nrow(sensor_stats))) {
+    row <- sensor_stats[i,]
+    cat(sprintf(" - %s: rows=%d, NA_timestamps=%d, first=%s, last=%s\n",
+                as.character(row$Source_File), as.integer(row$N_Rows), as.integer(row$N_NA_Timestamp),
+                ifelse(is.na(row$First_TS), "NA", format(row$First_TS, "%Y-%m-%d %H:%M")),
+                ifelse(is.na(row$Last_TS), "NA", format(row$Last_TS, "%Y-%m-%d %H:%M"))))
+  }
+}
+
 calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calendar_parser)
 calendar_daily <- apply_calendar_three_day_rule(calendar_daily_raw, config$calendar_assignment)
+
+# if a default sensor is configured, fill any NA entries produced by the
+# calendar (days with no assignment or conflicting sensors).  This makes it
+# possible to treat a particular sensor as the “standard” when no extra
+# sensor is selected in the calendar.
+if (!is.null(config$calendar_default_sensor) && nzchar(config$calendar_default_sensor)) {
+  default_s <- config$calendar_default_sensor
+  n_na_before <- sum(is.na(calendar_daily$Sensor))
+  calendar_daily$Sensor[is.na(calendar_daily$Sensor)] <- default_s
+  if (n_na_before > 0) {
+    cat(sprintf("Calendar default sensor applied: '%s' to %d day(s)\n", 
+                default_s, n_na_before))
+  }
+}
 
 # --- OUTLIER FILTERING (optional: configured in config.yaml) ---
 apply_outlier_filter <- function(df, cols = c("room_temp","rel_hum","abs_hum"), method = "iqr", iqr_mult = 1.5, z_thresh = 3) {
@@ -667,9 +736,17 @@ sleep_complete <- sleep_df_raw %>%
 temp_mapped <- sleep_complete %>% 
   filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
   rowwise() %>% 
-  mutate(Avg_Temp = mean(sensor_raw$room_temp[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T),
-         Avg_Rel_Hum = mean(sensor_raw$rel_hum[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T),
-         Avg_Abs_Hum = mean(sensor_raw$abs_hum[sensor_raw$timestamp >= bedtime & sensor_raw$timestamp <= waketime], na.rm=T)) %>%
+  mutate(
+    # apply configurable padding when matching sensor rows
+    .bed_pad = bedtime - minutes(matching_padding_minutes),
+    .wak_pad = waketime + minutes(matching_padding_minutes),
+    Avg_Temp = mean(sensor_raw$room_temp[sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad], na.rm = TRUE),
+    Avg_Rel_Hum = mean(sensor_raw$rel_hum[sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad], na.rm = TRUE),
+    Avg_Abs_Hum = mean(sensor_raw$abs_hum[sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad], na.rm = TRUE),
+    Raw_N_Readings = sum((sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  select(-.bed_pad, -.wak_pad) %>%
   ungroup() %>%
   # attach calendar assignments
   left_join(calendar_daily %>% select(Date, Sensor, Flags, Flags_List), by = "Date") %>%
@@ -735,7 +812,14 @@ if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
 
 if(nrow(final_data_matched) > 0) {
   full_dates <- seq(min(final_data_matched$Date, na.rm=T), max(final_data_matched$Date, na.rm=T), by="1 day")
-  final_data_viz <- final_data_matched %>% complete(Date = full_dates)
+  # complete() fills in any missing dates; if the input already contains
+  # more than one row for a given Date (e.g. duplicate sleep records)
+  # they would carry through, resulting in the dashboard showing the date
+  # twice.  Enforce a single row per calendar day here, keeping the first
+  # appearance.
+  final_data_viz <- final_data_matched %>%
+    complete(Date = full_dates) %>%
+    distinct(Date, .keep_all = TRUE)
 } else {
   full_dates <- as.Date(character(0))
   final_data_viz <- final_data_matched
@@ -816,20 +900,15 @@ for(v_name in names(room_vars)) {
   cat(sprintf("%-15s (Raw)  | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), sum(!is.na(r_data))))
 }
 
-# --- 4. DASHBOARD DATAFRAME (TRANSPOSED) ---
-# Build a transposed dashboard where rows are Metrics (incl. Sensor+Flags)
-# and columns are Date strings. Filter out missing Date rows first.
+# --- 4. DASHBOARD DATAFRAME ---
+# Build a dashboard table keeping original structure. Filter out missing Date rows,
+# and add a human-readable date string for display.
 dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
   select(Date, Sensor, Flags, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
-  mutate(Date_Str = format(Date, "%d.%m.%Y")) %>%
-  # ensure a common type for pivoting (character) to avoid type-combine errors
-  mutate(across(-c(Date, Date_Str), ~ as.character(.x))) %>%
-  pivot_longer(cols = -c(Date, Date_Str), names_to = "Metric", values_to = "Value") %>%
-  select(-Date) %>%
-  pivot_wider(names_from = Date_Str, values_from = Value, values_fn = list)
+  mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
-cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df) — transponiert mit Sensor+Flags\n\n")
+cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df)\n\n")
 
 
 # --- 5. IMPACT ANALYSIS & OPTIMA ---

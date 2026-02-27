@@ -12,3 +12,14 @@ calendar_source:
 
 # When using a local .ics file, set file_path relative to the repo root, e.g.:
 # file_path: "../data/2026.01.22/my_calendar.ics"
+# you can also override the default sensor used when the calendar has no
+# assignment for a day.  Leave unset to preserve NA values.
+# calendar_default_sensor: "FlorianZimmerSensor"
+
+# sensor_files: (define the known sensor CSV formats; legacy config may use
+# temp_files instead but sensor_files is preferred)
+#   FlorianZimmerSensor:
+#     path: "ThermometerZimmerFlorian_data.csv"
+#     col_time: "Date"
+#     col_temp: "Temperature_Celsius(℃)"
+#     col_hum: "Relative_Humidity(%)"
