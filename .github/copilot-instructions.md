@@ -19,7 +19,7 @@
 ## Project-specific conventions
 - Config-driven mappings:
   - `column_names` for Garmin column headers.
-  - `temp_files` + `usage_timeline` for sensor files and time ranges.
+  - `sensor_files` (previously called `temp_files`) + `usage_timeline` for sensor definitions and time ranges.
   - `sleep_data_sources` list of Garmin CSVs.
   - `outlier_filter` for method, thresholds, and stage.
 - Date handling: nightly grouping uses `as.Date(timestamp - hours(12))` to align nights crossing midnight.

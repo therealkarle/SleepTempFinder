@@ -24,6 +24,9 @@ parse_orders:
 locale:
   decimal_mark: ","
 
+# matching padding (minutes) applied when matching sensor rows to sleep windows
+matching_padding_minutes: 30
+
 
 # scan behaviour: if recursive is true, every CSV under data_directory (subfolders included)
 # will be inspected. Useful when sensor or sleep files are placed in date-named subfolders.
@@ -44,14 +47,28 @@ column_names:
   garmin_body_bat: "Body Battery"
   garmin_quality: "Qualität"
 
-# --- SENSOR & FILE INVENTORY ---
-# sensor definitions are used to rename columns when reading CSVs.  The
-# file path is only needed for explicit mapping; any CSV under data_directory
-# with matching column headers will also be ingested automatically (recursively
-# if scan_recursive is true).
-temp_files:
+# --- SENSOR FILES ---
+# sensor definitions list each distinct room‑sensor CSV format encountered
+# in the data directory.  The path value is only required when you want to
+# explicitly identify a file by name; the script will otherwise scan all
+# CSVs under `data_directory` and match based on column headers.
+#
+# add any additional sensors you spot in `data/` here.  In the workspace the
+# only sensor present is the ThermometerZimmerFlorian file, so that entry is
+# already included below.
+#
+# NOTE: the older key name `temp_files` is recognised for backwards
+# compatibility, but `sensor_files` is now preferred — it more clearly
+# describes the purpose.
+sensor_files:
   FlorianZimmerSensor: 
     path: "ThermometerZimmerFlorian_data.csv"
+    col_time: "Date"
+    col_temp: "Temperature_Celsius(℃)"
+    col_hum: "Relative_Humidity(%)"
+  
+  WohnwagenSensor:
+    path: "Wohnwagen_data.csv"
     col_time: "Date"
     col_temp: "Temperature_Celsius(℃)"
     col_hum: "Relative_Humidity(%)"
@@ -63,16 +80,20 @@ quality_mapping:
   befriedigend: 2
   schlecht: 1
 
-usage_timeline:
-  - { file_id: "FlorianZimmerSensor", start: "2020-01-01", end: "2030-12-31" }
+
 
 # list of Garmin sleep exports; if omitted or incomplete the script will
 # also scan all CSVs under data_directory and classify them by header.
 # canonicalization: filenames are stripped of trailing " (1)" etc. and any
 # name containing "schlaf" becomes simply "Sleep" in summaries.
-sleep_data_sources: ["Schlaf(5).csv"]
+# leave empty or adjust to match actual filenames; using [] lets the script
+# autodetect all sleep files.
+sleep_data_sources: []
 
 # --- CALENDAR SOURCE (SENSOR & FLAGS) ---
+# optional default sensor name used when no sensor is assigned in the
+# calendar.  If unset/NULL the Sensor column will remain NA for those days.
+calendar_default_sensor: "FlorianZimmerSensor"
 calendar_source:
   enabled: true
   mode: "url" # options: "url" or "file"
