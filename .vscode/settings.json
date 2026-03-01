@@ -1,4 +1,7 @@
 {
   "r.rpath.windows": "C:\\Program Files\\R\\R-4.5.2\\bin\\R.exe",
-  "r.rterm.windows": "C:\\Program Files\\R\\R-4.5.2\\bin\\R.exe"
+  "r.rterm.windows": "C:\\Program Files\\R\\R-4.5.2\\bin\\R.exe",
+  "chat.tools.terminal.autoApprove": {
+    "Rscript": true
+  }
 }
