@@ -564,6 +564,18 @@ if (exists("sensor_raw") && nrow(sensor_raw) > 0) {
   }
 }
 
+# save a nightly summary of the raw sensor data *before* any outlier filtering
+# (used later to illustrate the effect of the sensor-stage filter)
+sensor_nightly_prefilter <- sensor_raw %>%
+  mutate(Date = wake_date(timestamp)) %>%
+  group_by(Date) %>%
+  summarise(
+    Avg_Temp = mean(room_temp, na.rm = TRUE),
+    Avg_Rel_Hum = mean(rel_hum, na.rm = TRUE),
+    Avg_Abs_Hum = mean(abs_hum, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
 calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calendar_parser)
 # when using wake‑date semantics the three‑day smoothing rule is usually
 # unnecessary; it can be disabled via calendar_assignment.require_prev_next_day
@@ -789,6 +801,15 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
       ungroup() %>%
       select(Date, Source_File, bedtime, waketime, Avg_Temp_Raw, Avg_Rel_Hum_Raw, Avg_Abs_Hum_Raw, Raw_N_Readings_Raw)
 
+    # join the raw-window summary computed above; this allows us to detect
+    # cases where the sensor-stage outlier filter removed *all* readings
+    # within the sleep window.  The filter is still applied to eliminate
+    # spikes/artefacts inside each night, but we don't want to throw away a
+    # whole night just because the filter was over‑zealous.  In those rare
+    # cases we "restore" the nightly averages from the unfiltered copy
+    # (`sensor_raw_before_outlier`) – only the average is recovered, not the
+    # individual observations.  This keeps the user‑visible count of nights
+    # stable while still keeping spikes out of the remaining nights.
     temp_mapped <- temp_mapped %>%
       left_join(fallback_windows, by = c("Date", "Source_File", "bedtime", "waketime")) %>%
       mutate(
@@ -954,8 +975,23 @@ sensor_nightly_raw <- sensor_raw %>%
   group_by(Date) %>%
   summarise(Avg_Temp = mean(room_temp, na.rm=T), Avg_Rel_Hum = mean(rel_hum, na.rm=T), Avg_Abs_Hum = mean(abs_hum, na.rm=T), .groups = 'drop')
 
+# compute counts of nights that have any data at all before/after filter; these
+# are *not* the same as the per-variable counts shown later.  A night can be
+# present only for humidity, for example, which increments the "used" total
+# but not the temperature-specific n value below.
+n_any_raw_prefilter <- sensor_nightly_prefilter %>%
+  filter(!is.na(Avg_Temp) | !is.na(Avg_Rel_Hum) | !is.na(Avg_Abs_Hum)) %>%
+  nrow()
+n_any_raw_after <- sensor_nightly_raw %>%
+  filter(!is.na(Avg_Temp) | !is.na(Avg_Rel_Hum) | !is.na(Avg_Abs_Hum)) %>%
+  nrow()
+
 cat("                DESCRIPTIVE STATISTICS\n")
 cat("===========================================================\n\n")
+# show some overall counts to avoid confusion between variable-specific n's
+cat(sprintf("Nights used for analysis (any metric): %d\n", nrow(final_data_matched)))
+cat(sprintf("Nights with any raw sensor data before filter: %d\n", n_any_raw_prefilter))
+cat(sprintf("Nights with any raw sensor data after filter: %d\n\n", n_any_raw_after))
 cat("TABLE 1: BIOMARKERS (Garmin Data)\n")
 bio_vars <- list("Sleep_Score" = "Sleep_Score", "HRV" = "HRV", "RHR" = "RHR")
 for(v_name in names(bio_vars)) {
@@ -964,11 +1000,15 @@ for(v_name in names(bio_vars)) {
   cat(sprintf("%-15s (Raw)  | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), sum(!is.na(r_data))))
 }
 cat("\nTABLE 2: ROOM DATA (Nightly Averages)\n")
+cat("  (n values below are count of non‑missing nights for that variable)\n")
 room_vars <- list("Room Temp" = "Avg_Temp", "Rel Humidity" = "Avg_Rel_Hum", "Abs Humidity" = "Avg_Abs_Hum")
 for(v_name in names(room_vars)) {
-  m_data <- final_data_matched[[room_vars[[v_name]]]]; r_data <- sensor_nightly_raw[[room_vars[[v_name]]]]
+  m_data <- final_data_matched[[room_vars[[v_name]]]]
+  r_data <- sensor_nightly_raw[[room_vars[[v_name]]]]
+  pre_data <- sensor_nightly_prefilter[[room_vars[[v_name]]]]
   cat(sprintf("%-15s (Used) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", v_name, mean(m_data, na.rm=T), sd(m_data, na.rm=T), min(m_data, na.rm=T), max(m_data, na.rm=T), sum(!is.na(m_data))))
-  cat(sprintf("%-15s (Raw)  | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), sum(!is.na(r_data))))
+  cat(sprintf("%-15s (Raw after filter) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), n_any_raw_after))
+  cat(sprintf("%-15s (Raw before filter)| Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(pre_data, na.rm=T), sd(pre_data, na.rm=T), min(pre_data, na.rm=T), max(pre_data, na.rm:T), n_any_raw_prefilter))
 }
 
 # --- 4. DASHBOARD DATAFRAME ---
