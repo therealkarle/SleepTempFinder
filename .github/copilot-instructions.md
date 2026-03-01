@@ -22,7 +22,7 @@
   - `sensor_files` (previously called `temp_files`) + `usage_timeline` for sensor definitions and time ranges.
   - `sleep_data_sources` list of Garmin CSVs.
   - `outlier_filter` for method, thresholds, and stage.
-- Date handling: nightly grouping uses `as.Date(timestamp - hours(12))` to align nights crossing midnight.
+- Date handling: nightly grouping used to subtract 12h to get the bedtime day; the pipeline now adds 12h (wake date) to keep sensor/calendar and sleep data aligned.
 - RHR optimization inverts values before peak detection (`RHR` treated as “lower is better”).
 
 ## When changing code

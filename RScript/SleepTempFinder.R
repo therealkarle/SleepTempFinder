@@ -11,7 +11,7 @@
 #   * removed obsolete dataframes and inline simple transforms
 #   * unified sensor header detection/lookup helpers
 #   * added dry-run flag to suppress plotting
-#   * added utility helpers (parse_datetime_safe, night_date, map_sensor_to_nightly)
+#   * added utility helpers (parse_datetime_safe, wake_date/nigh_date alias, map_sensor_to_nightly)
 #   * updated config.yaml with new sections (parse_orders, locale, plot)
 #
 # --- 1. ENVIRONMENT SETUP ---
@@ -184,8 +184,14 @@ trim_vector <- function(x) {
   x[x != "" & !is.na(x)]
 }
 
-# convert a timestamp to the corresponding "night" date by subtracting 12h
-night_date <- function(ts) as.Date(ts - hours(12))
+# convert a timestamp to the corresponding "wake" date by adding 12h
+# (previous versions used a 12h subtraction to get the bedtime day; we keep
+# the old name as an alias for compatibility but new code should call
+# `wake_date`.)
+wake_date <- function(ts) as.Date(ts + hours(12))
+
+# legacy alias preserved for scripts that still reference night_date
+night_date <- wake_date
 
 collapse_flags <- function(x) {
   vals <- sort(unique(trim_vector(x)))
@@ -559,6 +565,9 @@ if (exists("sensor_raw") && nrow(sensor_raw) > 0) {
 }
 
 calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calendar_parser)
+# when using wake‑date semantics the three‑day smoothing rule is usually
+# unnecessary; it can be disabled via calendar_assignment.require_prev_next_day
+# (default in config.yaml is now FALSE).
 calendar_daily <- apply_calendar_three_day_rule(calendar_daily_raw, config$calendar_assignment)
 
 # if a default sensor is configured, fill any NA entries produced by the
@@ -630,7 +639,7 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 
       # Count per-night sensor readings and valid values before filtering (for configured cols)
       sensor_before <- sensor_raw_before %>%
-        mutate(Date = as.Date(timestamp - hours(12))) %>%
+        mutate(Date = wake_date(timestamp)) %>%
         group_by(Date) %>%
         summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
 
@@ -640,7 +649,7 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 
       # Count valid values after filtering
       sensor_after <- sensor_raw %>%
-        mutate(Date = as.Date(timestamp - hours(12))) %>%
+        mutate(Date = wake_date(timestamp)) %>%
         group_by(Date) %>%
         summarise(across(all_of(cfg_cols_exist), ~sum(!is.na(.x)), .names = "valid_{col}"), n = n(), .groups = 'drop')
 
@@ -661,12 +670,12 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 
         # Extra check via nightly averages: if nightly avg existed before but is NA after, treat as outlier-removed
         sensor_nightly_before <- sensor_raw_before %>%
-          mutate(Date = night_date(timestamp)) %>%
+          mutate(Date = wake_date(timestamp)) %>%
           group_by(Date) %>%
           summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
 
         sensor_nightly_after <- sensor_raw %>%
-          mutate(Date = night_date(timestamp)) %>%
+          mutate(Date = wake_date(timestamp)) %>%
           group_by(Date) %>%
           summarise(Avg_Temp = mean(room_temp, na.rm=TRUE), Avg_Rel_Hum = mean(rel_hum, na.rm=TRUE), Avg_Abs_Hum = mean(abs_hum, na.rm=TRUE), .groups = 'drop')
 
@@ -696,10 +705,10 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
       # after per-night checks, combine with sensor-row losses
       dates_to_mark <- unique(c(dates_lost_sensor, nights_lost_by_avg))
       if(length(dates_to_mark) > 0) {
-        # dates_to_mark is based on sensor night_date(timestamp) (bedtime day).
-        # Sleep records use wake day as Date, so shift by +1 day to align audit reasons.
-        dates_to_mark_sleep_date <- dates_to_mark + days(1)
-        removed_dates_fmt <- format(dates_to_mark_sleep_date, "%d.%m.%Y")
+        # dates_to_mark is already based on wake_date(timestamp), which matches
+        # the `Date` field used in the sleep records and calendar.  No shift
+        # required.
+        removed_dates_fmt <- format(dates_to_mark, "%d.%m.%Y")
         excluded_outlier_dates <- unique(c(excluded_outlier_dates, removed_dates_fmt))
         cat(sprintf("Outlier filter (sensor) removed data for nights (all values NA after filtering): %s\n", paste(removed_dates_fmt, collapse = ", ")))
       }
@@ -717,7 +726,7 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
 
 # build a per-night sensor summary (after any outlier filtering)
 sensor_summary <- sensor_raw %>%
-  mutate(Date = night_date(timestamp),
+  mutate(Date = wake_date(timestamp),
          Source_Name = canonical_basename(Source_File)) %>%
   group_by(Date) %>%
   summarise(
@@ -941,7 +950,7 @@ cat("===========================================================\n\n")
 
 # --- OUTPUT: DESCRIPTIVE STATISTICS ---
 sensor_nightly_raw <- sensor_raw %>%
-  mutate(Date = night_date(timestamp)) %>% 
+  mutate(Date = wake_date(timestamp)) %>% 
   group_by(Date) %>%
   summarise(Avg_Temp = mean(room_temp, na.rm=T), Avg_Rel_Hum = mean(rel_hum, na.rm=T), Avg_Abs_Hum = mean(abs_hum, na.rm=T), .groups = 'drop')
 

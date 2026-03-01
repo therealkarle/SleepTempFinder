@@ -101,7 +101,10 @@ calendar_source:
   file_path: ""
 
 calendar_assignment:
-  require_prev_next_day: true
+  # when true the script only keeps sensor/flag values that appear on the
+  # previous and next day as well (three‑day smoothing).  With wake‑date
+  # semantics this is usually no longer desired, so the default is now false.
+  require_prev_next_day: false
   apply_separately_for_sensor_and_flags: true
 
 calendar_parser:
