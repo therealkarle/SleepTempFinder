@@ -93,6 +93,14 @@ sleep_data_sources: []
 # --- CALENDAR SOURCE (SENSOR & FLAGS) ---
 # optional default sensor name used when no sensor is assigned in the
 # calendar.  If unset/NULL the Sensor column will remain NA for those days.
+#
+# Calendar events may include metadata in their SUMMARY/DESCRIPTION such as
+#   sensor=LivingRoom; flags=quiet,fan
+# The parser will recognise a `sensor=` assignment and an optional
+# `flag`/`flags=` declaration that can appear after the sensor or in a
+# different field; multiple flags may be supplied as a comma-separated list
+# (semicolon separators are also tolerated).  The Flags value will appear in
+# the calendar output and can be used for filtering.
 calendar_default_sensor: "FlorianZimmerSensor"
 calendar_source:
   enabled: true

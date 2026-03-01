@@ -194,6 +194,10 @@ wake_date <- function(ts) as.Date(ts + hours(12))
 night_date <- wake_date
 
 collapse_flags <- function(x) {
+  # incoming list/vector of flag strings; ensure uniqueness and sort
+  # then join with comma+space for display.  The input may already contain
+  # comma- or semicolon-separated flags which were split earlier by
+  # `split_flags`, so we only need to collapse the cleaned values here.
   vals <- sort(unique(trim_vector(x)))
   if (length(vals) == 0) return(NA_character_)
   paste(vals, collapse = ", ")
@@ -201,7 +205,9 @@ collapse_flags <- function(x) {
 
 split_flags <- function(x) {
   if (is.na(x) || str_trim(x) == "") return(character(0))
-  sort(unique(trim_vector(str_split(x, "\\s*,\\s*")[[1]])))
+  # split on commas or semicolons so the user can write either
+  parts <- str_split(x, "\\s*[,;]\\s*")[[1]]
+  sort(unique(trim_vector(parts)))
 }
 
 read_ics_lines <- function(mode, url_value = NULL, file_value = NULL) {
@@ -244,10 +250,47 @@ parse_ics_time <- function(value) {
   parse_date_time(val, orders = c("Ymd HMS", "Ymd HM", "Y-m-d H:M:S", "Y-m-d H:M", "Y-m-d"), quiet = TRUE)
 }
 
+# ICS text values escape certain characters with a backslash (comma, semicolon,
+# backslash and newline).  When we pull SUMMARY/DESCRIPTION from an event we
+# should unescape so that a calendar entry such as
+#   SUMMARY:Sensor\=LivingRoom, Flags\=quiet
+# yields the literal `Sensor=LivingRoom, Flags=quiet` instead of including
+# stray backslashes.  This also prevents the later parser from truncating at
+# an escaped comma.
+unescape_ics <- function(val) {
+  if (is.na(val)) return(val)
+  out <- val
+  out <- str_replace_all(out, "\\\\n", "\n")
+  out <- str_replace_all(out, "\\\\N", "\n")
+  out <- str_replace_all(out, "\\\\,", ",")
+  out <- str_replace_all(out, "\\\\;", ";")
+  out <- str_replace_all(out, "\\\\\\\\", "\\")
+  out
+}
+
 parse_sensor_flags <- function(text_value) {
+  # text_value can come from either SUMMARY or DESCRIPTION (or both) of
+  # an ics event.  We look for a `sensor=` assignment and an optional
+  # `flag`/`flags=` assignment.  Flags may be declared after the sensor
+  # (separated by a semicolon or comma) and multiple flags can be provided
+  # as a comma‑separated list.  Examples:
+  #   parse_sensor_flags("Sensor=foo; Flags=bar")
+  #   parse_sensor_flags("sensor=foo; flags=a,b,c")
+  #   parse_sensor_flags("flags=quiet; sensor=LivingRoom")
   text_value <- text_value %||% ""
-  sensor_match <- str_match(text_value, regex("sensor\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))
-  flags_match <- str_match(text_value, regex("flags?\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))
+
+  # there may be more than one flags= declaration (e.g. summary and
+  # description both include them) so use match_all and combine results.
+  flags_raw_vec <- str_match_all(text_value,
+                                 regex("flags?\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))[[1]][,2]
+  # to prevent sensor names that contain commas from being truncated we
+  # strip any flag assignments from the text before looking for `sensor=`.
+  text_no_flags <- str_replace_all(text_value,
+                                   regex("flags?\\s*=\\s*[^;\\n]+", ignore_case = TRUE), "")
+
+  # now capture sensor; allow commas in the value but stop at semicolon or
+  # newline (multi-day events may add trailing semicolons during combine).
+  sensor_match <- str_match(text_no_flags, regex("sensor\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))
 
   sensor_raw <- str_trim(sensor_match[, 2] %||% NA_character_)
   sensor_name <- sensor_raw
@@ -256,8 +299,9 @@ parse_sensor_flags <- function(text_value) {
   }
 
   flags <- character(0)
-  if (!is.na(flags_match[, 2] %||% NA_character_)) {
-    flags <- split_flags(flags_match[, 2])
+  if (length(flags_raw_vec) > 0) {
+    # split each found value on commas and merge unique items
+    flags <- sort(unique(unlist(lapply(flags_raw_vec, split_flags))))
   }
 
   list(sensor_raw = ifelse(is.na(sensor_raw) || sensor_raw == "", NA_character_, sensor_raw),
@@ -308,6 +352,10 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
     dt_end <- extract_ics_prop(chunk, "DTEND")
     summary_p <- extract_ics_prop(chunk, "SUMMARY")
     description_p <- extract_ics_prop(chunk, "DESCRIPTION")
+    # unescape any ICS backslash-escapes so commas/semicolons are treated as
+    # literal text rather than delimiters in our parser
+    summary_p$value <- unescape_ics(summary_p$value)
+    description_p$value <- unescape_ics(description_p$value)
 
     start_time <- parse_ics_time(dt_start$value)
     end_time <- parse_ics_time(dt_end$value)
@@ -332,6 +380,11 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
     }
     combined_text <- paste(unique(field_text), collapse = "; ")
     parsed <- parse_sensor_flags(combined_text)
+    # diagnostics: if the source text mentions "flag" but parser returned
+    # an empty vector, log the raw text so the user can inspect the format
+    if (str_detect(tolower(combined_text), "flags?") && length(parsed$flags) == 0) {
+      cat(sprintf("Calendar parse warning: flags keyword found but none extracted in event text '%s'\n", combined_text))
+    }
 
     date_seq <- seq(start_date, end_date, by = "1 day")
     event_rows[[i]] <- tibble(Date = as.Date(date_seq),
