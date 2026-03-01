@@ -1008,7 +1008,7 @@ for(v_name in names(room_vars)) {
   pre_data <- sensor_nightly_prefilter[[room_vars[[v_name]]]]
   cat(sprintf("%-15s (Used) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", v_name, mean(m_data, na.rm=T), sd(m_data, na.rm=T), min(m_data, na.rm=T), max(m_data, na.rm=T), sum(!is.na(m_data))))
   cat(sprintf("%-15s (Raw after filter) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), n_any_raw_after))
-  cat(sprintf("%-15s (Raw before filter)| Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(pre_data, na.rm=T), sd(pre_data, na.rm=T), min(pre_data, na.rm=T), max(pre_data, na.rm:T), n_any_raw_prefilter))
+  cat(sprintf("%-15s (Raw before filter)| Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(pre_data, na.rm=T), sd(pre_data, na.rm=T), min(pre_data, na.rm=T), max(pre_data, na.rm=T), n_any_raw_prefilter))
 }
 
 # --- 4. DASHBOARD DATAFRAME ---
