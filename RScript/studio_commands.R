@@ -69,6 +69,14 @@ run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FA
   if (!is.null(filter)) {
     args <- c(args, paste0("--filter=", filter))
   }
+  prev_args <- Sys.getenv("_STF_ARGS_", unset = NA_character_)
+  on.exit({
+    if (is.na(prev_args)) {
+      Sys.unsetenv("_STF_ARGS_")
+    } else {
+      Sys.setenv("_STF_ARGS_" = prev_args)
+    }
+  }, add = TRUE)
   Sys.setenv("_STF_ARGS_" = paste(args, collapse = " "))
   # load & execute the main script; it will pick up the env var above
   # ensure we can find it regardless of current working directory

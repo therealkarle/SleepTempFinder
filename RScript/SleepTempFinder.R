@@ -125,6 +125,7 @@ if (interactive()) {
   if (nzchar(env_args)) {
     # simple split on whitespace; user helper should quote values if needed
     args <- strsplit(env_args, "\\s+")[[1]]
+    Sys.unsetenv("_STF_ARGS_")
     cat("Interactive override: args=", paste(args, collapse=" "), "\n")
   }
 }
@@ -1200,7 +1201,7 @@ dashboard_df <- final_data_viz %>%
   select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
-cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df)\n\n")
+
 
 
 # --- 5. IMPACT ANALYSIS & OPTIMA ---
