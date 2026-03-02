@@ -146,6 +146,17 @@ calendar_parser:
   tolerant: true
   event_field_priority: ["SUMMARY", "DESCRIPTION"]
 
+# analysis_filter may be used to restrict the dataset after the
+# initial run.  It accepts the same fields as the --filter CLI option and
+# is merged with any filter provided on the command line (CLI takes
+# precedence).  Date ranges cannot be specified in the config; use the
+# --filter string for that.
+#
+# example CLI values:
+#   --filter="2025"                    # all of 2025
+#   --filter="q1.2025;Flags=Hochlitten"  # first quarter with specific flag
+#   --filter="01.2025;Sensors=Wohnwagen" # January 2025 and a sensor
+#   --filter="02.02.2026,04.03.2026"     # 2 Feb through 4 Mar 2026
 analysis_filter:
   enabled: false
   sensor_include: []

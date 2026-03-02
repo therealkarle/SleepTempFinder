@@ -22,7 +22,45 @@ for (pkg in pkgs) {
   library(pkg, character.only = TRUE) 
 }
 
-if (interactive()) setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# always try to run from the script's directory so relative paths work.
+# this works in both interactive (RStudio) and non-interactive invocations.
+get_script_path <- function() {
+  # interactive: rstudioapi yields the file being edited/run
+  if (interactive() && requireNamespace("rstudioapi", quietly = TRUE)) {
+    p <- rstudioapi::getActiveDocumentContext()$path
+    if (nzchar(p)) return(normalizePath(p))
+  }
+  # non-interactive: look for --file= argument
+  args1 <- commandArgs(trailingOnly = FALSE)
+  m <- grep("^--file=", args1)
+  if (length(m) > 0) {
+    return(normalizePath(sub("^--file=", "", args1[m][1])))
+  }
+  # as a last resort, look at the call stack (may work when sourced)
+  if (!is.null(sys.frame(1)$ofile)) {
+    return(normalizePath(sys.frame(1)$ofile))
+  }
+  # if we still don't know it, try upward search for the file name
+  find_upward <- function(name) {
+    d <- normalizePath(getwd(), mustWork = FALSE)
+    repeat {
+      candidate <- file.path(d, name)
+      if (file.exists(candidate)) return(candidate)
+      parent <- dirname(d)
+      if (parent == d) break
+      d <- parent
+    }
+    NULL
+  }
+  return(find_upward("SleepTempFinder.R"))
+}
+
+script_path <- get_script_path()
+if (!is.null(script_path)) {
+  setwd(dirname(script_path))
+} else {
+  warning("could not determine SleepTempFinder.R location; working directory unchanged")
+}
 
 # load configuration (primary + optional private override)
 config <- read_yaml("config.yaml")
@@ -51,10 +89,172 @@ plot_cfg <- config$plot
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
-# command-line arguments support (e.g. dry run)
+# command-line arguments support (dry run, --filter)
+#
+# Optional flag: --dry-run  (suppress plots, useful for automated runs)
+#
+# Optional filter syntax (via --filter="...") allows restricting the
+# dataset.  The string is semicolon-separated and can include at most one
+# date selector plus zero or more sensor/flag clauses.  Date selectors
+# recognize:
+#   YYYY            entire year (e.g. 2025)
+#   qN.YYYY         quarter (e.g. q1.2025)
+#   MM.YYYY         month (e.g. 01.2025)
+#   DD.MM.YYYY      a single date or, with a comma, a range
+#                  (e.g. 02.02.2026,04.03.2026)
+#
+# Sensor or flag clauses look like "Sensors=Name" or "Flags=A|B".
+# Multiple values may be separated by '|' (OR) or ',' (AND for flags;
+# sensors are treated as OR).  Sensor names are resolved against
+# configuration keys/nicknames.  The CLI filter is merged with
+# config$analysis_filter (command-line values override config).
+#
+# Examples:
+#   --filter="2025"                        # whole year 2025
+#   --filter="q1.2025;Flags=Hochlitten"    # first quarter with flag
+#   --filter="01.2025;Sensors=Wohnwagen"   # January with specific sensor
+#   --filter="02.02.2026,04.03.2026"       # explicit date range
 args <- commandArgs(trailingOnly = TRUE)
+
+# when running interactively (e.g. in RStudio) we allow a helper to set
+# arguments via an environment variable.  This makes it easy to define
+# named presets in another script or via RStudio addins without editing
+# the main file.
+if (interactive()) {
+  env_args <- Sys.getenv("_STF_ARGS_", "")
+  if (nzchar(env_args)) {
+    # simple split on whitespace; user helper should quote values if needed
+    args <- strsplit(env_args, "\\s+")[[1]]
+    cat("Interactive override: args=", paste(args, collapse=" "), "\n")
+  }
+}
+
+# support a help message
+if ("--help" %in% args || "-h" %in% args) {
+  cat("Usage: Rscript SleepTempFinder.R [--dry-run] [--filter='...']\n",
+      "Filter grammar: see script comments at top for examples.\n")
+  quit(status = 0)
+}
+
+# simple dry-run flag
 dry_run <- "--dry-run" %in% args
 if(dry_run) cat("*** dry-run mode enabled (plots suppressed) ***\n")
+
+# helper: parse a single date token into a start/end Date range
+parse_date_token <- function(tok) {
+  tok <- tolower(trimws(tok))
+  # year e.g. 2025
+  if (grepl("^\\d{4}$", tok)) {
+    start <- as.Date(paste0(tok, "-01-01"))
+    end <- as.Date(paste0(tok, "-12-31"))
+    return(list(start = start, end = end))
+  }
+  # quarter e.g. q1.2025
+  if (grepl("^q[1-4]\\.\\d{4}$", tok)) {
+    parts <- strsplit(tok, "\\.")[[1]]
+    q <- as.integer(sub("^q", "", parts[1]))
+    yr <- as.integer(parts[2])
+    mstart <- (q - 1) * 3 + 1
+    start <- as.Date(sprintf("%04d-%02d-01", yr, mstart))
+    mend <- mstart + 2
+    end <- as.Date(sprintf("%04d-%02d-%02d", yr, mend,
+                             lubridate::days_in_month(as.Date(sprintf("%04d-%02d-01", yr, mend)))))
+    return(list(start = start, end = end))
+  }
+  # month e.g. 01.2025 or 1.2025
+  if (grepl("^\\d{1,2}\\.\\d{4}$", tok)) {
+    parts <- strsplit(tok, "\\.")[[1]]
+    m <- as.integer(parts[1]); yr <- as.integer(parts[2])
+    start <- as.Date(sprintf("%04d-%02d-01", yr, m))
+    end <- as.Date(sprintf("%04d-%02d-%02d", yr, m,
+                             lubridate::days_in_month(start)))
+    return(list(start = start, end = end))
+  }
+  # explicit date or range dd.mm.yyyy[,dd.mm.yyyy]
+  if (grepl("^\\d{2}\\.\\d{2}\\.\\d{4}", tok)) {
+    parts <- strsplit(tok, ",")[[1]]
+    ds <- lapply(parts, lubridate::dmy)
+    if (length(ds) == 1) return(list(start = ds[[1]], end = ds[[1]]))
+    if (length(ds) == 2) {
+      return(list(start = min(ds[[1]], ds[[2]]), end = max(ds[[1]], ds[[2]])))
+    }
+  }
+  NULL
+}
+
+# split a sequence of flags/sensors separated by pipe or comma
+split_list_token <- function(val) {
+  if (is.null(val) || val == "") return(character(0))
+  parts <- unlist(strsplit(val, "\\||,", perl = TRUE))
+  trimws(parts[parts != ""])
+}
+
+# parse the custom --filter argument; returns a list containing
+#   enabled (bool), sensor_include, flags_include, flags_mode,
+#   date_start, date_end (Date or NULL)
+parse_filter_string <- function(arg) {
+  cfg <- list(enabled = TRUE,
+              sensor_include = character(0),
+              flags_include = character(0),
+              flags_mode = "any",
+              date_start = NULL,
+              date_end = NULL)
+  tokens <- unlist(strsplit(arg, ";"))
+  for (tok in tokens) {
+    tok <- trimws(tok)
+    if (tok == "") next
+    if (grepl("^(?i)flags=", tok, perl = TRUE)) {
+      body <- sub("^(?i)flags=", "", tok, perl = TRUE)
+      if (grepl("\\|", body)) {
+        cfg$flags_mode <- "any"
+        cfg$flags_include <- split_list_token(body)
+      } else if (grepl(",", body)) {
+        cfg$flags_mode <- "all"
+        cfg$flags_include <- split_list_token(body)
+      } else {
+        cfg$flags_include <- trimws(body)
+      }
+    } else if (grepl("^(?i)sensors=", tok, perl = TRUE)) {
+      body <- sub("^(?i)sensors=", "", tok, perl = TRUE)
+      cfg$sensor_include <- split_list_token(body)
+    } else {
+      # assume date token
+      dr <- parse_date_token(tok)
+      if (!is.null(dr)) {
+        cfg$date_start <- dr$start
+        cfg$date_end <- dr$end
+      } else {
+        warning("unrecognized filter token: ", tok)
+      }
+    }
+  }
+  cfg
+}
+
+# look for an explicit --filter= value
+filter_arg <- NULL
+for (a in args) {
+  if (startsWith(a, "--filter=")) {
+    filter_arg <- sub("^--filter=", "", a)
+  }
+}
+cli_filter <- NULL
+if (!is.null(filter_arg)) {
+  cli_filter <- parse_filter_string(filter_arg)
+  cat("CLI filter parsed: ", capture.output(str(cli_filter)), "\n")
+  # merge into analysis_filter config so downstream code can apply it
+  if (is.null(config$analysis_filter)) config$analysis_filter <- list(enabled = TRUE)
+  config$analysis_filter$enabled <- TRUE
+  # sensor_include will be resolved to canonical IDs later once the
+  # helper function is defined (see below)
+  if (length(cli_filter$sensor_include) > 0) {
+    config$analysis_filter$sensor_include <- cli_filter$sensor_include
+  }
+  if (length(cli_filter$flags_include) > 0) {
+    config$analysis_filter$flags_include <- cli_filter$flags_include
+    config$analysis_filter$flags_mode <- cli_filter$flags_mode
+  }
+}
 
 # helper that applies parsing orders by type and quiet=TRUE
 parse_datetime_safe <- function(x, type = "garmin_datetime") {
@@ -358,6 +558,16 @@ resolve_sensor_label <- function(label, cfg) {
   }
   cat(sprintf("Calendar warning: sensor '%s' not found in config\n", label))
   return(NA_character_)
+}
+
+# if CLI provided a sensor filter earlier, resolve any human-friendly names now
+# that the helper is defined.
+if (!is.null(cli_filter) && length(cli_filter$sensor_include) > 0) {
+  cli_filter$sensor_include <- sapply(cli_filter$sensor_include,
+                                     function(lbl) resolve_sensor_label(lbl, config),
+                                     USE.NAMES = FALSE)
+  cli_filter$sensor_include <- trimws(cli_filter$sensor_include)
+  config$analysis_filter$sensor_include <- cli_filter$sensor_include
 }
 
 load_calendar_daily <- function(calendar_cfg, parser_cfg) {
@@ -840,6 +1050,13 @@ final_data_matched <- temp_mapped %>%
   )
 
 n_before_analysis_filter <- nrow(final_data_matched)
+# if CLI supplied a date range, trim the results accordingly
+if (!is.null(cli_filter) && !is.null(cli_filter$date_start)) {
+  cat(sprintf("Applying date filter %s -> %s\n", cli_filter$date_start, cli_filter$date_end))
+  final_data_matched <- final_data_matched %>%
+    filter(Date >= cli_filter$date_start & Date <= cli_filter$date_end)
+}
+
 final_data_matched <- apply_analysis_subset_filter(final_data_matched, config$analysis_filter)
 n_after_analysis_filter <- nrow(final_data_matched)
 
