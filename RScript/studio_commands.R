@@ -122,6 +122,12 @@ setwd_to_active <- function() {
   stop("rstudioapi not available or no active document")
 }
 
+run_clear_filter <- function() {
+  Sys.unsetenv("_STF_ARGS_")
+  message("Temporary analysis filter cleared (_STF_ARGS_ removed).")
+  invisible(TRUE)
+}
+
 
 run_winter2026 <- function() run_analysis('02.2026')
 run_wohnwagen <- function() run_analysis('Sensors=Wohnwagen')
