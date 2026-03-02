@@ -13,7 +13,9 @@ cat("Command Syntax: run_analysis(date=NULL, flags=NULL, sensors=NULL, dry_run=F
     "Example: run_analysis('2025'), run_analysis(flags='Hochlitten'),\n",
     "         run_analysis('01.2025', sensors='Wohnwagen')\n")
 # The primary helper is `run_analysis()`, which sets an environment variable
-# that the main script reads when in interactive mode.
+# that the main script reads when in interactive mode.  (Recent updates also
+# ensure any duplicated sleep records for the same calendar date are collapsed
+# before analysis; audit output will report the number of unique dates.)
 #
 # Example usage in RStudio console:
 #   source('RScript/studio_commands.R')

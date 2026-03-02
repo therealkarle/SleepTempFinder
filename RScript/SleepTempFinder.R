@@ -1006,6 +1006,19 @@ temp_mapped <- sleep_complete %>%
   ungroup() %>%
   select(-.bed_pad, -.wak_pad, -.idx_used)
 
+# detect and collapse any duplicated nights before further processing.  It is
+# common for Garmin exports to include multiple files that happen to have the
+# same calendar Date; earlier versions of the script left these duplicates
+# intact until visualization, causing audit counts (and downstream analyses)
+# to report twice the number of unique nights.  Keep the first appearance and
+# warn so the user can inspect if unexpected.
+dup_dates <- temp_mapped %>% count(Date) %>% filter(n > 1) %>% pull(Date)
+if (length(dup_dates) > 0) {
+  cat(sprintf("Warning: %d duplicate sleep records detected for dates: %s\n",
+              length(dup_dates), paste(format(dup_dates, "%Y-%m-%d"), collapse = ", ")))
+  temp_mapped <- temp_mapped %>% arrange(Date) %>% distinct(Date, .keep_all = TRUE)
+}
+
 
 
 # build a review data frame summarizing all inputs per night
@@ -1066,11 +1079,10 @@ if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
 
 if(nrow(final_data_matched) > 0) {
   full_dates <- seq(min(final_data_matched$Date, na.rm=T), max(final_data_matched$Date, na.rm=T), by="1 day")
-  # complete() fills in any missing dates; if the input already contains
-  # more than one row for a given Date (e.g. duplicate sleep records)
-  # they would carry through, resulting in the dashboard showing the date
-  # twice.  Enforce a single row per calendar day here, keeping the first
-  # appearance.
+  # complete() fills in any missing dates.  The script now de-duplicates
+  # sleep records earlier, so duplicates should not normally reach this point,
+  # but we still guard against them here to avoid the dashboard showing a date
+  # twice.  Keep the first appearance if multiple rows slip through.
   final_data_viz <- final_data_matched %>%
     complete(Date = full_dates) %>%
     distinct(Date, .keep_all = TRUE)
@@ -1115,7 +1127,8 @@ cat("\n===========================================================\n")
 cat("                DATA QUALITY AUDIT\n")
 cat("===========================================================\n")
 cat(sprintf("Total nights detected:        %d\n", nrow(sleep_df_raw)))
-cat(sprintf("Nights used for analysis:     %d\n", nrow(final_data_matched)))
+cat(sprintf("Nights used for analysis:     %d (unique dates %d)\n",
+            nrow(final_data_matched), n_distinct(final_data_matched$Date)))
 cat(sprintf("Nights excluded total:        %d\n", length(unique_excluded_dates)))
 cat("-----------------------------------------------------------\n")
 cat(sprintf("Reason: Missing Sleep Data:   %d\n", length(excluded_sleep_fmt)))
