@@ -152,14 +152,6 @@ analysis_filter:
   flags_include: []
   flags_mode: "any" # options: "any" or "all"
 
-# --- OUTLIER FILTER ---
-outlier_filter:
-  enabled: true
-  method: "iqr" # options: "iqr" or "zscore"
-  iqr_multiplier: 1.5
-  z_threshold: 3
-  apply_stage: "sensor" # "sensor" or "nightly"
-  columns: ["room_temp", "rel_hum", "abs_hum"]
 
 # --- PLOTTING / VISUALIZATION OPTIONS ---
 # colors and labels for metrics used in plots.  Modify as desired.
