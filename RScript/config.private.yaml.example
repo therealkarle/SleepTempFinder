@@ -15,10 +15,23 @@ calendar_source:
 # you can also override the default sensor used when the calendar has no
 # assignment for a day.  Leave unset to preserve NA values.
 # calendar_default_sensor: "FlorianZimmerSensor"
+#
+# fine‑tune how multi‑day event assignments are handled:
+# calendar_assignment:
+#   require_prev_next_day: false
+#   apply_separately_for_sensor_and_flags: true
+#   # ignore_event_start eliminates the first day of a span when applying
+#   # sensors/flags (useful for block bookings where start day shouldn't
+#   # carry metadata).
+#   ignore_event_start: false
 
 # sensor_files: (define the known sensor CSV formats; legacy config may use
 # temp_files instead but sensor_files is preferred)
 #   FlorianZimmerSensor:
+#     # nickname: "Zimmer"  # optional alias usable in calendar events
+#     # nickname:
+#     #   - "Zimmer"
+#     #   - "Home"
 #     path: "ThermometerZimmerFlorian_data.csv"
 #     col_time: "Date"
 #     col_temp: "Temperature_Celsius(℃)"

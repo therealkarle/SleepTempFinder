@@ -149,6 +149,25 @@ get_sensor_file_info <- function(path) {
   }
 }
 
+# return the canonical config key (sensor ID) for a given CSV path.  This
+# mirrors the logic in detect_sensor_config but returns the name of the entry
+# rather than the entry itself.  The ID is used later to restrict which
+# rows are included when a calendar entry specifies a particular sensor.
+identify_sensor_id <- function(path) {
+  base <- basename(path)
+  for (id in names(config$sensor_files)) {
+    if (base == basename(config$sensor_files[[id]]$path)) return(id)
+  }
+  # try header-based match as a fallback
+  cfg <- detect_sensor_config(path)
+  if (!is.null(cfg)) {
+    for (id in names(config$sensor_files)) {
+      if (identical(cfg, config$sensor_files[[id]])) return(id)
+    }
+  }
+  NA_character_
+}
+
 read_garmin_fixed <- function(path) {
   lines <- readLines(path, warn = FALSE)
   lines[1] <- gsub("^[^\t[:alnum:][:punct:][:space:]]+", "", lines[1])
@@ -309,6 +328,38 @@ parse_sensor_flags <- function(text_value) {
        flags = flags)
 }
 
+# resolve a calendar sensor label to a canonical config key.  The calendar
+# value may be either the key itself or, if defined in the config, the
+# sensor's `nickname`.  Returns NA and prints a warning if no match is found.
+resolve_sensor_label <- function(label, cfg) {
+  # attempt to map a calendar label to the canonical config key.  Accepts
+  # either the key itself or any of the configured nicknames.  If no exact
+  # match is found, we also try a simple substring match (case-insensitive)
+  # so that values like "Wohnwagen" or "Wohnwagen Sensor" still resolve to
+  # "WohnwagenSensor".
+  if(is.na(label) || label == "") return(NA_character_)
+  lookup <- list()
+  for(id in names(cfg$sensor_files)) {
+    lookup[[tolower(id)]] <- id
+    nicks <- cfg$sensor_files[[id]]$nickname %||% character(0)
+    for(nick in as.character(nicks)) {
+      if(nzchar(nick)) lookup[[tolower(nick)]] <- id
+    }
+  }
+  key <- tolower(label)
+  if(key %in% names(lookup)) return(lookup[[key]])
+  # substring fallback: find any lookup key that appears inside the label
+  matches <- unique(unlist(lapply(names(lookup), function(k) {
+    if(str_detect(key, fixed(k))) return(lookup[[k]])
+    NULL
+  })))
+  if(length(matches) == 1) {
+    return(matches[[1]])
+  }
+  cat(sprintf("Calendar warning: sensor '%s' not found in config\n", label))
+  return(NA_character_)
+}
+
 load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   if (is.null(calendar_cfg) || !isTRUE(calendar_cfg$enabled)) {
     return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
@@ -386,7 +437,14 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
       cat(sprintf("Calendar parse warning: flags keyword found but none extracted in event text '%s'\n", combined_text))
     }
 
-    date_seq <- seq(start_date, end_date, by = "1 day")
+    # optionally drop the first date of a multi‑day event
+    seq_start <- start_date
+    if (!is.null(config$calendar_assignment$ignore_event_start) &&
+        isTRUE(config$calendar_assignment$ignore_event_start) &&
+        start_date < end_date) {
+      seq_start <- start_date + 1
+    }
+    date_seq <- seq(seq_start, end_date, by = "1 day")
     event_rows[[i]] <- tibble(Date = as.Date(date_seq),
                               Sensor_Raw = parsed$sensor_raw,
                               Sensor = parsed$sensor_name,
@@ -592,7 +650,8 @@ sensor_raw <- map_df(all_sensor_files, function(fp) {
     rename(timestamp = !!f_info$col_time, room_temp = !!f_info$col_temp, rel_hum = !!f_info$col_hum, abs_hum = `Abs Humidity(g/m³)`) %>%
     mutate(timestamp = parse_datetime_safe(timestamp, type = "sensor_timestamp")) %>%
     mutate(Source_File = fp,
-           Source_Name = canonical_basename(fp))
+           Source_Name = canonical_basename(fp),
+           Sensor_ID = identify_sensor_id(fp))
 })
 
 # Diagnostic summary per sensor file: count rows, NA timestamps, first/last timestamp
@@ -635,17 +694,42 @@ calendar_daily_raw <- load_calendar_daily(config$calendar_source, config$calenda
 # (default in config.yaml is now FALSE).
 calendar_daily <- apply_calendar_three_day_rule(calendar_daily_raw, config$calendar_assignment)
 
-# if a default sensor is configured, fill any NA entries produced by the
-# calendar (days with no assignment or conflicting sensors).  This makes it
-# possible to treat a particular sensor as the “standard” when no extra
-# sensor is selected in the calendar.
+# retain the raw value parsed from the calendar so that we can
+# distinguish between a genuinely missing assignment and a label that failed
+# to resolve against the config.
+if (nrow(calendar_daily) > 0) {
+  calendar_daily$Sensor_Raw <- calendar_daily$Sensor
+  calendar_daily$Sensor <- sapply(calendar_daily$Sensor_Raw,
+                                  resolve_sensor_label,
+                                  cfg = config,
+                                  USE.NAMES = FALSE)
+}
+
+# if a default sensor is configured, fill only those rows that had no raw
+# label at all.  Do not override entries where the user supplied a value that
+# could not be resolved (we want those to remain NA so the script keeps both
+# sensors and the audit will show the mismatch).
 if (!is.null(config$calendar_default_sensor) && nzchar(config$calendar_default_sensor)) {
   default_s <- config$calendar_default_sensor
-  n_na_before <- sum(is.na(calendar_daily$Sensor))
-  calendar_daily$Sensor[is.na(calendar_daily$Sensor)] <- default_s
+  n_na_before <- sum(is.na(calendar_daily$Sensor) & is.na(calendar_daily$Sensor_Raw))
+  calendar_daily$Sensor[is.na(calendar_daily$Sensor) & is.na(calendar_daily$Sensor_Raw)] <- default_s
   if (n_na_before > 0) {
     cat(sprintf("Calendar default sensor applied: '%s' to %d day(s)\n", 
                 default_s, n_na_before))
+  }
+}
+
+# warn the user if any days still lack a valid sensor mapping; include the
+# original raw text for debugging
+if (nrow(calendar_daily) > 0) {
+  problem <- calendar_daily %>% filter(is.na(Sensor) & !is.na(Sensor_Raw))
+  if (nrow(problem) > 0) {
+    cat(sprintf("Calendar warning: %d day(s) have unrecognized sensor labels:\n",
+                nrow(problem)))
+    for(i in seq_len(nrow(problem))) {
+      row <- problem[i,]
+      cat(sprintf("  %s -> '%s'\n", format(row$Date), row$Sensor_Raw))
+    }
   }
 }
 
@@ -797,6 +881,7 @@ sensor_summary <- sensor_raw %>%
   summarise(
     Sensor_Files = list(unique(Source_File)),
     Sensor_Names = list(unique(Source_Name)),
+    Sensor_IDs = list(unique(na.omit(Sensor_ID))),
     N_Readings = n(),
     Valid_Temp = sum(!is.na(room_temp)),
     Valid_Rel_Hum = sum(!is.na(rel_hum)),
@@ -814,25 +899,40 @@ sleep_complete <- sleep_df_raw %>%
 # drop rows with missing critical sleep metrics immediately
 
 # nightly mapping: compute per-night sensor averages and join calendar & sensor summaries
+# when a calendar entry specifies a sensor, only rows from that
+# sensor should contribute to the nightly average; otherwise all sensors are
+# considered.  To accomplish this we join the calendar information before
+# computing the averages and then conditionally filter `sensor_raw` inside the
+# rowwise mutate.
+
 temp_mapped <- sleep_complete %>% 
   filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
+  # calendar assignment may provide a default sensor value already; also
+  # carry the raw label so it can be referenced later when building the
+  # review dataframe.
+  left_join(calendar_daily %>% select(Date, Sensor, Sensor_Raw, Flags, Flags_List), by = "Date") %>%
   rowwise() %>% 
   mutate(
     # apply configurable padding when matching sensor rows
     .bed_pad = bedtime - minutes(matching_padding_minutes),
     .wak_pad = waketime + minutes(matching_padding_minutes),
-    Avg_Temp = mean(sensor_raw$room_temp[sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad], na.rm = TRUE),
-    Avg_Rel_Hum = mean(sensor_raw$rel_hum[sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad], na.rm = TRUE),
-    Avg_Abs_Hum = mean(sensor_raw$abs_hum[sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad], na.rm = TRUE),
-    Raw_N_Readings = sum((sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad), na.rm = TRUE)
+    .idx_used = list({
+      idx <- which(sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad)
+      if(!is.na(Sensor)) {
+        idx <- idx[sensor_raw$Sensor_ID[idx] == Sensor]
+      }
+      idx
+    }),
+    # restrict to the selected sensor if one is assigned
+    Avg_Temp = mean(sensor_raw$room_temp[unlist(.idx_used)], na.rm = TRUE),
+    Avg_Rel_Hum = mean(sensor_raw$rel_hum[unlist(.idx_used)], na.rm = TRUE),
+    Avg_Abs_Hum = mean(sensor_raw$abs_hum[unlist(.idx_used)], na.rm = TRUE),
+    Raw_N_Readings = length(unlist(.idx_used)),
+    Sensor_Files = list(unique(sensor_raw$Source_File[unlist(.idx_used)])),
+    Sensor_Names = list(unique(sensor_raw$Source_Name[unlist(.idx_used)]))
   ) %>%
   ungroup() %>%
-  select(-.bed_pad, -.wak_pad) %>%
-  ungroup() %>%
-  # attach calendar assignments
-  left_join(calendar_daily %>% select(Date, Sensor, Flags, Flags_List), by = "Date") %>%
-  # add per-night sensor file summary (could be multiple files)
-  left_join(sensor_summary, by = "Date")
+  select(-.bed_pad, -.wak_pad, -.idx_used)
 
 # If sensor-stage outlier filtering removed all readings for a sleep window,
 # restore that window from unfiltered sensor data so nights with real data are
@@ -840,19 +940,26 @@ temp_mapped <- sleep_complete %>%
 if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
   stage_cfg <- if(!is.null(config$outlier_filter$apply_stage)) config$outlier_filter$apply_stage else "sensor"
   if(tolower(stage_cfg) == "sensor" && exists("sensor_raw_before_outlier") && !is.null(sensor_raw_before_outlier)) {
-    fallback_windows <- sleep_complete %>%
-      filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
+    fallback_windows <- temp_mapped %>%
+      select(Date, Source_File, bedtime, waketime, Sensor) %>%
       rowwise() %>%
       mutate(
         .bed_pad = bedtime - minutes(matching_padding_minutes),
         .wak_pad = waketime + minutes(matching_padding_minutes),
-        Avg_Temp_Raw = mean(sensor_raw_before_outlier$room_temp[sensor_raw_before_outlier$timestamp >= .bed_pad & sensor_raw_before_outlier$timestamp <= .wak_pad], na.rm = TRUE),
-        Avg_Rel_Hum_Raw = mean(sensor_raw_before_outlier$rel_hum[sensor_raw_before_outlier$timestamp >= .bed_pad & sensor_raw_before_outlier$timestamp <= .wak_pad], na.rm = TRUE),
-        Avg_Abs_Hum_Raw = mean(sensor_raw_before_outlier$abs_hum[sensor_raw_before_outlier$timestamp >= .bed_pad & sensor_raw_before_outlier$timestamp <= .wak_pad], na.rm = TRUE),
-        Raw_N_Readings_Raw = sum((sensor_raw_before_outlier$timestamp >= .bed_pad & sensor_raw_before_outlier$timestamp <= .wak_pad), na.rm = TRUE)
+        .idx_raw_used = list({
+          idx <- which(sensor_raw_before_outlier$timestamp >= .bed_pad & sensor_raw_before_outlier$timestamp <= .wak_pad)
+          if(!is.na(Sensor)) {
+            idx <- idx[sensor_raw_before_outlier$Sensor_ID[idx] == Sensor]
+          }
+          idx
+        }),
+        Avg_Temp_Raw = mean(sensor_raw_before_outlier$room_temp[unlist(.idx_raw_used)], na.rm = TRUE),
+        Avg_Rel_Hum_Raw = mean(sensor_raw_before_outlier$rel_hum[unlist(.idx_raw_used)], na.rm = TRUE),
+        Avg_Abs_Hum_Raw = mean(sensor_raw_before_outlier$abs_hum[unlist(.idx_raw_used)], na.rm = TRUE),
+        Raw_N_Readings_Raw = length(unlist(.idx_raw_used))
       ) %>%
       ungroup() %>%
-      select(Date, Source_File, bedtime, waketime, Avg_Temp_Raw, Avg_Rel_Hum_Raw, Avg_Abs_Hum_Raw, Raw_N_Readings_Raw)
+      select(Date, Source_File, bedtime, waketime, Sensor, Avg_Temp_Raw, Avg_Rel_Hum_Raw, Avg_Abs_Hum_Raw, Raw_N_Readings_Raw)
 
     # join the raw-window summary computed above; this allows us to detect
     # cases where the sensor-stage outlier filter removed *all* readings
@@ -864,7 +971,7 @@ if(!is.null(config$outlier_filter) && isTRUE(config$outlier_filter$enabled)) {
     # individual observations.  This keeps the user‑visible count of nights
     # stable while still keeping spikes out of the remaining nights.
     temp_mapped <- temp_mapped %>%
-      left_join(fallback_windows, by = c("Date", "Source_File", "bedtime", "waketime")) %>%
+      left_join(fallback_windows, by = c("Date", "Source_File", "bedtime", "waketime", "Sensor")) %>%
       mutate(
         .restore_window = (Raw_N_Readings == 0) & (Raw_N_Readings_Raw > 0),
         Avg_Temp = if_else(.restore_window, Avg_Temp_Raw, Avg_Temp),
@@ -925,8 +1032,23 @@ nightly_review_df <- temp_mapped %>%
     Sleep_Name = ifelse(str_detect(canonical_basename(Source_File), regex("schlaf", ignore_case = TRUE)),
                          "Sleep",
                          canonical_basename(Source_File)),
-    Sensor_Sources = map_chr(Sensor_Files, ~ paste(.x, collapse = "; ")),
-    Sensor_Names = map_chr(Sensor_Names, ~ paste(.x, collapse = "; "))
+    # when a calendar sensor is specified we only show the files that belong
+    # to that sensor; otherwise list whatever was available
+    Sensor_Sources = map2_chr(Sensor_Files, Sensor, function(files, sensor) {
+      if(!is.na(sensor)) {
+        sel <- files[sapply(files, identify_sensor_id) == sensor]
+        if(length(sel) > 0) return(paste(sel, collapse = "; "))
+      }
+      paste(files, collapse = "; ")
+    }),
+    # the name we show should reflect what the calendar told us; if that
+    # value failed to resolve we also include the raw text so the user can
+    # spot the problem.
+    Sensor_Names = case_when(
+      !is.na(Sensor) ~ Sensor,
+      !is.na(Sensor_Raw) ~ paste0("(raw: ", Sensor_Raw, ")"),
+      TRUE ~ map_chr(Sensor_Names, ~ paste(.x, collapse = "; "))
+    )
   )
 # simple audit: how many distinct files and canonical names contribute
 cat(sprintf("Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n", 
@@ -1066,10 +1188,15 @@ for(v_name in names(room_vars)) {
 
 # --- 4. DASHBOARD DATAFRAME ---
 # Build a dashboard table keeping original structure. Filter out missing Date rows,
-# and add a human-readable date string for display.
+# and add a human-readable date string for display.  Also include the sensor
+# file(s) that contributed to each night so the dashboard can show which source
+# the merged room data came from.
 dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
-  select(Date, Sensor, Flags, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
+  # Sensor_Files is a list-column; convert to semicolon-separated string for
+  # ease of display.  Use Sensor_Names if you prefer canonical names instead.
+  mutate(Sensor_File = map_chr(Sensor_Files, ~ paste(.x, collapse = "; ")) ) %>%
+  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
 cat("\n>>> DASHBOARD DATAFRAME CREATED (Object: dashboard_df)\n\n")

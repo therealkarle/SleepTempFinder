@@ -53,6 +53,13 @@ column_names:
 # explicitly identify a file by name; the script will otherwise scan all
 # CSVs under `data_directory` and match based on column headers.
 #
+# Each sensor entry may include an optional `nickname` field.  This provides a
+# friendly alias that can be used in calendar metadata (e.g. `sensor=Hochliten`)
+# while still mapping back to the canonical config key.  The nickname may be
+# a single string or a list of strings if you want multiple acceptable names
+# for the same sensor.  The nickname(s) are ignored when reading the CSVs
+# themselves and are only used for calendar matching and validation.
+#
 # add any additional sensors you spot in `data/` here.  In the workspace the
 # only sensor present is the ThermometerZimmerFlorian file, so that entry is
 # already included below.
@@ -62,12 +69,22 @@ column_names:
 # describes the purpose.
 sensor_files:
   FlorianZimmerSensor: 
+    # optional friendly name for calendar events
+    nickname: "Zuhause"
     path: "ThermometerZimmerFlorian_data.csv"
     col_time: "Date"
     col_temp: "Temperature_Celsius(℃)"
     col_hum: "Relative_Humidity(%)"
   
   WohnwagenSensor:
+    # the caravan sensor has historically been referred to as "Hochliten" or
+    # "Hochlitten"; allow several variants plus a plain "Wohnwagen" label so
+    # calendar entries can be more forgiving.
+    nickname:
+      - "Hochlitten"
+      - "Hochliten"
+      - "Wohnwagen"
+      - "WohnwagenSensor"
     path: "Wohnwagen_data.csv"
     col_time: "Date"
     col_temp: "Temperature_Celsius(℃)"
@@ -93,6 +110,11 @@ sleep_data_sources: []
 # --- CALENDAR SOURCE (SENSOR & FLAGS) ---
 # optional default sensor name used when no sensor is assigned in the
 # calendar.  If unset/NULL the Sensor column will remain NA for those days.
+# The name supplied by the calendar may refer either to the config key or to
+# a sensor's optional `nickname` (case‑insensitive).  If the script is unable
+# to resolve a calendar value to a known sensor it will print a warning and
+# prefix the value with "UNKNOWN:" in the Sensor column so you can spot the
+# problem.
 #
 # Calendar events may include metadata in their SUMMARY/DESCRIPTION such as
 #   sensor=LivingRoom; flags=quiet,fan
@@ -114,6 +136,11 @@ calendar_assignment:
   # semantics this is usually no longer desired, so the default is now false.
   require_prev_next_day: false
   apply_separately_for_sensor_and_flags: true
+  # if true, the first day of a multi‑day calendar event is ignored when
+  # assigning sensors/flags.  This is handy for multi‑day “block” entries
+  # where the start date should not carry metadata.  A single‑day event will
+  # still be applied as usual.
+  ignore_event_start: true
 
 calendar_parser:
   tolerant: true

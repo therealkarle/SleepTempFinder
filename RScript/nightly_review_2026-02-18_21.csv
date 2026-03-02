@@ -1,0 +1,7 @@
+"Date","Source_File","Sensor","Sensor_Raw","Sensor_Sources","Raw_N_Readings","Avg_Temp"
+2026-02-21,"../data/2026.02.25/Schlaf(1).csv","WohnwagenSensor","Hochlitten","",0,NA
+2026-02-20,"../data/2026.02.25/Schlaf(1).csv","WohnwagenSensor","Hochlitten","../data/2026.02.25/Wohnwagen_data.csv",15,21.7466666666667
+2026-02-19,"../data/2026.02.25/Schlaf(1).csv","WohnwagenSensor","Hochlitten","../data/2026.02.25/Wohnwagen_data.csv",7,20.4142857142857
+2026-02-20,"../data/2026.02.25/Schlaf(2).csv","WohnwagenSensor","Hochlitten","../data/2026.02.25/Wohnwagen_data.csv",15,21.7466666666667
+2026-02-19,"../data/2026.02.25/Schlaf(2).csv","WohnwagenSensor","Hochlitten","../data/2026.02.25/Wohnwagen_data.csv",7,20.4142857142857
+2026-02-18,"../data/2026.02.25/Schlaf(2).csv","WohnwagenSensor","Hochlitten","../data/2026.02.25/Wohnwagen_data.csv",3,22.8333333333333
