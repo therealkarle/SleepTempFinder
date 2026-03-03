@@ -95,8 +95,9 @@ matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.in
 #
 # Optional filter syntax (via --filter="...") allows restricting the
 # dataset.  The string is semicolon-separated and can include at most one
-# date selector plus zero or more sensor/flag clauses.  Date selectors
-# recognize:
+# date selector plus zero or more sensor/flag clauses or arbitrary logical
+# expressions on numeric columns (e.g. "SleepScore>80" or "18<temp<22").
+# Date selectors recognize:
 #   YYYY            entire year (e.g. 2025)
 #   qN.YYYY         quarter (e.g. q1.2025)
 #   MM.YYYY         month (e.g. 01.2025)
@@ -114,6 +115,8 @@ matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.in
 #   --filter="q1.2025;Flags=Hochlitten"    # first quarter with flag
 #   --filter="01.2025;Sensors=Wohnwagen"   # January with specific sensor
 #   --filter="02.02.2026,04.03.2026"       # explicit date range
+#   --filter="temp>18"                     # average temp over 18°C
+#   --filter="SleepScore>80"               # biomarker filter
 args <- commandArgs(trailingOnly = TRUE)
 
 # when running interactively (e.g. in RStudio) we allow a helper to set
@@ -194,12 +197,17 @@ split_list_token <- function(val) {
 #   enabled (bool), sensor_include, flags_include, flags_mode,
 #   date_start, date_end (Date or NULL)
 parse_filter_string <- function(arg) {
+  # expanded filter grammar now supports arbitrary logical expressions
+  # referring to columns present in the final dataset.  Unquoted expressions
+  # (e.g. "temp>18" or "SleepScore>80") are stored and later evaluated
+  # by `apply_analysis_subset_filter()` after sensor/flags filtering.
   cfg <- list(enabled = TRUE,
               sensor_include = character(0),
               flags_include = character(0),
               flags_mode = "any",
               date_start = NULL,
-              date_end = NULL)
+              date_end = NULL,
+              expr = character(0))
   tokens <- unlist(strsplit(arg, ";"))
   for (tok in tokens) {
     tok <- trimws(tok)
@@ -219,13 +227,15 @@ parse_filter_string <- function(arg) {
       body <- sub("^(?i)sensors=", "", tok, perl = TRUE)
       cfg$sensor_include <- split_list_token(body)
     } else {
-      # assume date token
+      # if it parses as a date range, treat accordingly, otherwise
+      # consider the token a logical expression for later evaluation.
       dr <- parse_date_token(tok)
       if (!is.null(dr)) {
         cfg$date_start <- dr$start
         cfg$date_end <- dr$end
       } else {
-        warning("unrecognized filter token: ", tok)
+        # treat as a metric/biomarker filter expression
+        cfg$expr <- c(cfg$expr, tok)
       }
     }
   }
@@ -254,6 +264,10 @@ if (!is.null(filter_arg)) {
   if (length(cli_filter$flags_include) > 0) {
     config$analysis_filter$flags_include <- cli_filter$flags_include
     config$analysis_filter$flags_mode <- cli_filter$flags_mode
+  }
+  if (length(cli_filter$expr) > 0) {
+    # expressions override any existing config expressions
+    config$analysis_filter$expr <- cli_filter$expr
   }
 }
 
@@ -719,6 +733,51 @@ apply_calendar_three_day_rule <- function(calendar_daily, assignment_cfg) {
   aligned
 }
 
+# helper: normalize simple filter expressions before evaluation
+#  - expand chained comparisons (e.g. `18<temp<22` -> `(18<temp & temp<22)`)
+#  - map common shorthand names to actual column names
+normalize_expr <- function(expr_str, df) {
+  # mapping of simple names to actual column names present in df
+  syn <- list(
+    temp = "Avg_Temp",
+    room_temp = "Avg_Temp",
+    avg_temp = "Avg_Temp",
+    sleepscore = "Sleep_Score",
+    sleep_score = "Sleep_Score",
+    hrv = "HRV",
+    rhr = "RHR",
+    relhum = "Avg_Rel_Hum",
+    absum = "Avg_Abs_Hum", # typo safe
+    abshum = "Avg_Abs_Hum",
+    rel_hum = "Avg_Rel_Hum",
+    abs_hum = "Avg_Abs_Hum"
+  )
+  # replace synonyms (word boundaries, case-insensitive)
+  for (alias in names(syn)) {
+    pat <- paste0("\\b", alias, "\\b")
+    expr_str <- gsub(pat, syn[[alias]], expr_str, ignore.case = TRUE, perl = TRUE)
+  }
+
+  # chained comparison expansion
+  expand_chains <- function(e) {
+    repeat {
+      m <- regexpr("(\\b[[:alnum:]_.]+\\b)\\s*([<>])\\s*(\\b[[:alnum:]_.]+\\b)\\s*([<>])\\s*(\\b[[:alnum:]_.]+\\b)",
+                   e, perl = TRUE)
+      if (m == -1) break
+      groups <- regmatches(e, regexec("(\\b[[:alnum:]_.]+\\b)\\s*([<>])\\s*(\\b[[:alnum:]_.]+\\b)\\s*([<>])\\s*(\\b[[:alnum:]_.]+\\b)",
+                                 e, perl = TRUE))[[1]]
+      a <- groups[2]; op1 <- groups[3]; b <- groups[4]; op2 <- groups[5]; c <- groups[6]
+      replacement <- paste0("(", a, op1, b, " & ", b, op2, c, ")")
+      e <- sub("(\\b[[:alnum:]_.]+\\b)\\s*([<>])\\s*(\\b[[:alnum:]_.]+\\b)\\s*([<>])\\s*(\\b[[:alnum:]_.]+\\b)",
+               replacement, e, perl = TRUE)
+    }
+    e
+  }
+
+  expr_str <- expand_chains(expr_str)
+  expr_str
+}
+
 apply_analysis_subset_filter <- function(df, filter_cfg) {
   if (is.null(filter_cfg) || !isTRUE(filter_cfg$enabled) || nrow(df) == 0) return(df)
 
@@ -739,6 +798,15 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
         if (flags_mode == "all") all(flags_include %in% row_flags) else any(flags_include %in% row_flags)
       })) %>%
       select(-.flags_vec)
+  }
+
+  # numeric/column expressions
+  exprs <- trim_vector(unlist(filter_cfg$expr %||% character(0)))
+  if (length(exprs) > 0) {
+    # combine into single logical expression
+    combined <- paste(sapply(exprs, normalize_expr, df = out), collapse = " & ")
+    # use rlang to parse safely
+    out <- out %>% filter(!!rlang::parse_expr(combined))
   }
 
   out

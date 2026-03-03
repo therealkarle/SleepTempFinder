@@ -162,6 +162,16 @@ analysis_filter:
   sensor_include: []
   flags_include: []
   flags_mode: "any" # options: "any" or "all"
+  # optional metric/biomarker expressions; each string is evaluated with
+  # dplyr/filter semantics after sensor/flag filtering.  Common shorthand
+  # names are accepted (e.g. "temp" → Avg_Temp, "SleepScore" → Sleep_Score)
+  # and chained comparisons like "18<temp<22" are expanded.
+  # examples:
+  #   expr:
+  #     - "temp>18"
+  #     - "SleepScore>80 & HRV>50"
+  #     - "18<temp<22"
+  expr: []
 
 
 # --- PLOTTING / VISUALIZATION OPTIONS ---
