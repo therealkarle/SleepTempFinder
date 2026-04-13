@@ -330,6 +330,18 @@ canonical_basename <- function(path) {
   b <- tolower(b)
   b
 }
+
+is_single_day_sleep_csv <- function(path) {
+  lines <- tryCatch(readLines(path, n = 20, warn = FALSE, encoding = "UTF-8"),
+                    error = function(e) character(0))
+  if (length(lines) == 0) return(FALSE)
+  lines <- trimws(lines)
+  if (!any(str_detect(lines, regex("^Sleep Score", ignore_case = TRUE)))) return(FALSE)
+  if (any(str_detect(lines, regex("^Datum\\s*,", ignore_case = TRUE)))) return(TRUE)
+  if (any(str_detect(lines, regex("^Schlafdauer\\s*,", ignore_case = TRUE)))) return(TRUE)
+  FALSE
+}
+
 # helper used when config lists explicit files that might be renamed copies
 expand_explicit <- function(explicit_paths, discovered) {
   out <- character(0)
@@ -348,12 +360,26 @@ expand_explicit <- function(explicit_paths, discovered) {
   }
   unique(out)
 }
+resolve_alternate_column <- function(mapping, hdr, primary_key, alt_key = NULL) {
+  if (!is.null(mapping[[primary_key]]) && mapping[[primary_key]] %in% hdr) {
+    return(mapping[[primary_key]])
+  }
+  if (!is.null(alt_key) && !is.null(mapping[[alt_key]])) {
+    alt_vals <- unlist(mapping[[alt_key]])
+    alt_match <- alt_vals[alt_vals %in% hdr]
+    if (length(alt_match) >= 1L) return(alt_match[[1]])
+  }
+  NULL
+}
+
 # classify a CSV by header row using configured column mappings
 is_sleep_csv <- function(path, mapping) {
+  if (is_single_day_sleep_csv(path)) return(TRUE)
+
   hdr <- tryCatch(names(read.csv(path, nrows = 1, stringsAsFactors = FALSE, check.names = FALSE)),
                   error = function(e) character(0))
-  # primary check: configured date column
-  if(mapping$garmin_date %in% hdr) return(TRUE)
+  # primary check: configured date column or alternate date column
+  if (!is.null(resolve_alternate_column(mapping, hdr, "garmin_date", "garmin_date_alt"))) return(TRUE)
   # fallback: presence of both bedtime and waketime columns
   if(mapping$garmin_bedtime %in% hdr && mapping$garmin_waketime %in% hdr) return(TRUE)
   FALSE
@@ -414,13 +440,67 @@ identify_sensor_id <- function(path) {
   NA_character_
 }
 
+read_garmin_single_day <- function(path, lines = NULL) {
+  if (is.null(lines)) {
+    lines <- tryCatch(readLines(path, warn = FALSE, encoding = "UTF-8"), error = function(e) character(0))
+  }
+  if (length(lines) == 0) return(tibble())
+  lines <- gsub("\r", "", lines)
+  # fix comma decimals in values such as -0,1° before splitting on comma
+  lines <- gsub("([+-]?[0-9]+),(?=[0-9]+°)", "\\1.", lines, perl = TRUE)
+  lines <- trimws(lines)
+  lines <- lines[lines != ""]
+  lines <- lines[!str_detect(lines, regex("^(Sleep Score 1 Tag|Sleep Score-Faktoren|Daten für Schlafzeitleiste)\\s*,?$", ignore_case = TRUE))]
+  if (length(lines) == 0) return(tibble())
+
+  kv <- suppressWarnings(read.csv(text = paste(lines, collapse = "\n"), header = FALSE, sep = ",",
+                                   stringsAsFactors = FALSE, check.names = FALSE,
+                                   na.strings = c(" ", "--", "NA", "")))
+  if (ncol(kv) < 2) return(tibble())
+
+  keys <- trimws(as.character(kv[[1]]))
+  values <- as.character(kv[[2]])
+  keep <- keys != "" & !is.na(keys)
+  if (sum(keep) == 0) return(tibble())
+  keys <- keys[keep]
+  values <- values[keep]
+  if (any(duplicated(keys))) {
+    keys <- make.unique(keys, sep = "_")
+  }
+  out <- as_tibble(as.list(set_names(values, keys)))
+
+  rename_map <- c(
+    Datum = "Sleep Score 4 Wochen",
+    Schlafdauer = "Dauer",
+    "Sleep Score" = "Score",
+    "Durchschnittlicher SpO₂" = "Pulsoximeter",
+    "Ø Veränderung der Hauttemperatur" = "Veränderung der Hauttemperatur",
+    "Ø HFV über Nacht" = "HFV-Status",
+    "Ø Atemfrequenz" = "Atmung"
+  )
+  for (old_name in names(rename_map)) {
+    if (old_name %in% names(out)) {
+      names(out)[names(out) == old_name] <- rename_map[[old_name]]
+    }
+  }
+  out <- out %>% mutate(across(everything(), as.character))
+  out
+}
+
 read_garmin_fixed <- function(path) {
   lines <- readLines(path, warn = FALSE)
+  if (is_single_day_sleep_csv(path)) {
+    single <- read_garmin_single_day(path, lines)
+    if (nrow(single) > 0) {
+      return(single)
+    }
+  }
   lines[1] <- gsub("^[^\t[:alnum:][:punct:][:space:]]+", "", lines[1])
   lines <- gsub("([+-]\\d+),(\\d+°)", "\\1.\\2", lines)
   lines <- gsub(",+$", "", lines)
   df <- read.csv(text = lines, sep = ",", header = TRUE, 
-                 check.names = FALSE, stringsAsFactors = FALSE, 
+                 check.names = FALSE, stringsAsFactors = FALSE,
+                 colClasses = "character",
                  na.strings = c(" ", "--", "NA", ""))
   return(as_tibble(df, .name_repair = "unique"))
 }
@@ -900,18 +980,23 @@ sleep_df_raw <- map_df(all_sleep_files, function(f) {
   # determine which column to use for Date
   date_col <- mapping$garmin_date
   if(!(date_col %in% hdr)) {
-    alt <- hdr[str_detect(hdr, regex("^Sleep Score", ignore_case = TRUE))]
-    if(length(alt) == 1) {
-      date_col <- alt[[1]]
+    if ("Datum" %in% hdr) {
+      date_col <- "Datum"
       cat(sprintf("Warning: using alternate date column '%s' for file %s\n", date_col, f))
+    } else {
+      alt <- hdr[str_detect(hdr, regex("^(Sleep Score|Datum)", ignore_case = TRUE))]
+      if(length(alt) == 1) {
+        date_col <- alt[[1]]
+        cat(sprintf("Warning: using alternate date column '%s' for file %s\n", date_col, f))
+      }
     }
   }
     df %>%
       mutate(Source_File = f,
         Source_Name = canonical_basename(f)) %>%
       mutate(Date = as.Date(!!sym(date_col)),
-        bedtime = parse_datetime_safe(!!sym(mapping$garmin_bedtime), type = "garmin_time"),
-        waketime = parse_datetime_safe(!!sym(mapping$garmin_waketime), type = "garmin_time")) %>%
+        bedtime = if (mapping$garmin_bedtime %in% hdr) parse_datetime_safe(!!sym(mapping$garmin_bedtime), type = "garmin_time") else as.POSIXct(NA),
+        waketime = if (mapping$garmin_waketime %in% hdr) parse_datetime_safe(!!sym(mapping$garmin_waketime), type = "garmin_time") else as.POSIXct(NA)) %>%
       # align parsed times to the same calendar Date, then detect and correct
       # cases where columns were mis-parsed (e.g. duration '7h 40min' parsed as 07:40)
       mutate(waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
@@ -928,8 +1013,13 @@ sleep_df_raw <- map_df(all_sleep_files, function(f) {
         bedtime = if_else(.swap_flag, .waketime_orig, .bedtime_orig),
         waketime = if_else(.swap_flag, .bedtime_orig, .waketime_orig)
       ) %>%
+      mutate(
+        .missing_window = is.na(bedtime) & is.na(waketime),
+        bedtime = if_else(.missing_window, as.POSIXct(Date) - hours(12), bedtime),
+        waketime = if_else(.missing_window, as.POSIXct(Date) + hours(12), waketime)
+      ) %>%
       mutate(bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
-      select(-.bedtime_orig, -.waketime_orig, -.swap_flag) %>%
+      select(-.bedtime_orig, -.waketime_orig, -.swap_flag, -.missing_window) %>%
       mutate(across(any_of(unlist(mapping[4:length(mapping)])), clean_val_final))
 })
 
@@ -1064,8 +1154,29 @@ sensor_summary <- sensor_raw %>%
 # --- 3. DATA PREP & AUDIT ---
 # nightly_review_df has been constructed above; it contains a row per night
 # with all input sources (sleep file path, sensor file(s)) plus flags and averages.
-sleep_complete <- sleep_df_raw %>%
-  rename(Sleep_Score = !!sym(mapping$garmin_sleep_score), HRV = !!sym(mapping$garmin_hrv), RHR = !!sym(mapping$garmin_rhr))
+resolve_sleep_col <- function(mapping, hdr, key, alt_key = NULL) {
+  col <- NULL
+  if (!is.null(mapping[[key]]) && mapping[[key]] %in% hdr) col <- mapping[[key]]
+  if (is.null(col) && !is.null(alt_key)) {
+    alt_vals <- unlist(mapping[[alt_key]])
+    alt_match <- alt_vals[alt_vals %in% hdr]
+    if (length(alt_match) >= 1L) col <- alt_match[[1]]
+  }
+  col
+}
+
+sleep_complete <- {
+  hdr <- names(sleep_df_raw)
+  rename_map <- list()
+  sleep_col <- resolve_sleep_col(mapping, hdr, "garmin_sleep_score")
+  hrv_col <- resolve_sleep_col(mapping, hdr, "garmin_hrv", "garmin_hrv_alt")
+  rhr_col <- resolve_sleep_col(mapping, hdr, "garmin_rhr")
+  if (!is.null(sleep_col)) rename_map[["Sleep_Score"]] <- sleep_col
+  if (!is.null(hrv_col)) rename_map[["HRV"]] <- hrv_col
+  if (!is.null(rhr_col)) rename_map[["RHR"]] <- rhr_col
+  sleep_df_raw %>% rename(!!!rename_map) %>%
+    mutate(across(any_of(c("Sleep_Score", "HRV", "RHR")), clean_val_final))
+}
 
 # drop rows with missing critical sleep metrics immediately
 

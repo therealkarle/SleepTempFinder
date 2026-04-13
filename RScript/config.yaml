@@ -35,10 +35,12 @@ scan_recursive: true
 # --- COLUMN MAPPING ---
 column_names:
   garmin_date: "Sleep Score 4 Wochen"
+  garmin_date_alt: "Datum"
   garmin_bedtime: "Schlafenszeit"
   garmin_waketime: "Aufstehzeit"
   garmin_sleep_score: "Score"
   garmin_hrv: "HFV-Status"
+  garmin_hrv_alt: "Ø HFV über Nacht"
   garmin_rhr: "Ruheherzfrequenz"
   garmin_duration: "Dauer"
   garmin_spo2: "Pulsoximeter"
