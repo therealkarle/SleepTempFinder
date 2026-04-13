@@ -205,6 +205,13 @@ analysis_filter:
 # --- PLOTTING / VISUALIZATION OPTIONS ---
 # colors and labels for metrics used in plots.  Modify as desired.
 plot:
+  # When true, the script automatically enables and starts httpgd in an
+  # interactive session. This improves VS Code plot history navigation and
+  # allows the Plot Viewer to retain multiple generated plots.
+  enable_httpgd: true
+  # When true, force-open a native R graphics window at startup.
+  # Useful when VS Code Plot Viewer does not appear after "Run Source".
+  open_native_window_on_start: true
   metric_colors:
     room_temp: "#ff7f0e"    # orange
     rel_hum: "#1f77b4"      # blue

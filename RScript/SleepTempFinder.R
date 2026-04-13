@@ -17,10 +17,18 @@
 # --- 1. ENVIRONMENT SETUP ---
 if (!require("rstudioapi")) install.packages("rstudioapi")
 pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales")
-for (pkg in pkgs) { 
+for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) install.packages(pkg)
-  library(pkg, character.only = TRUE) 
+  library(pkg, character.only = TRUE)
 }
+
+# explicitly load packages so static linters can resolve tidyverse/lubridate functions
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(lubridate))
+
+utils::globalVariables(
+  c("Date", "Sensor", "Flags", "Flags_List", "sensor_values", "flags_values", ".flags_vec")
+)
 
 # always try to run from the script's directory so relative paths work.
 # this works in both interactive (RStudio) and non-interactive invocations.
@@ -108,6 +116,41 @@ loc <- config$locale
 plot_cfg <- config$plot
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
+
+# Automatically enable httpgd when configured.
+# This improves VS Code plot history navigation by using the httpgd device.
+httpgd_started <- FALSE
+if (isTRUE(plot_cfg$enable_httpgd)) {
+  if (!requireNamespace("httpgd", quietly = TRUE)) {
+    install.packages("httpgd")
+  }
+  options(r.plot.useHttpgd = TRUE,
+          vsc.plot.useHttpgd = TRUE,
+          vsc.httpgd = TRUE)
+  cat(sprintf("httpgd enabled in config; interactive=%s\n", interactive()))
+  tryCatch({
+    httpgd::hgd()
+    httpgd_started <- TRUE
+    cat("httpgd device started for plotting.\n")
+  }, error = function(e) {
+    warning("Failed to start httpgd: ", conditionMessage(e), "\n")
+  })
+}
+
+# Optional fallback: open a native plot window on startup so users always
+# get a visible graphics device when running via VS Code "Run Source".
+open_native_window_on_start <- TRUE
+if (!is.null(plot_cfg$open_native_window_on_start)) {
+  open_native_window_on_start <- isTRUE(plot_cfg$open_native_window_on_start)
+}
+if (interactive() && open_native_window_on_start) {
+  tryCatch({
+    grDevices::dev.new(noRStudioGD = TRUE)
+    cat("Native R plot window opened on startup.\n")
+  }, error = function(e) {
+    warning("Failed to open native R plot window: ", conditionMessage(e), "\n")
+  })
+}
 
 # command-line arguments support (dry run, --filter)
 #
