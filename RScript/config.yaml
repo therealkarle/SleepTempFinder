@@ -64,6 +64,10 @@ column_names:
 # only sensor present is the ThermometerZimmerFlorian file, so that entry is
 # already included below.
 #
+# A sensor entry may define `default: true`; this sensor will be used for any
+# night without an explicit calendar-assigned sensor. Only one sensor should
+# have default=true, otherwise the first matching entry is used.
+#
 # NOTE: the older key name `temp_files` is recognised for backwards
 # compatibility, but `sensor_files` is now preferred — it more clearly
 # describes the purpose.
@@ -75,6 +79,7 @@ sensor_files:
     col_time: "Date"
     col_temp: "Temperature_Celsius(℃)"
     col_hum: "Relative_Humidity(%)"
+    default: true # if true, this sensor will be assigned to calendar events with no sensor specified; only one sensor should have this set to true
   
   WohnwagenSensor:
     # the caravan sensor has historically been referred to as "Hochliten" or
@@ -89,6 +94,25 @@ sensor_files:
     col_time: "Date"
     col_temp: "Temperature_Celsius(℃)"
     col_hum: "Relative_Humidity(%)"
+    
+    
+  WohnmobilAussen: 
+    nickname:
+      - "Wohnmobil Außen"
+      - "WohnmobilAußen"
+    path: "Wohnmobil Außen_data.csv"
+    col_time: "Date"
+    col_temp: "Temperature_Celsius(℃)"
+    col_hum: "Relative_Humidity(%)"
+    
+  WohnmobilInnen: 
+    nickname: "Wohnmobil"
+    path: "Wohnmobil Innen_data.csv"
+    col_time: "Date"
+    col_temp: "Temperature_Celsius(℃)"
+    col_hum: "Relative_Humidity(%)"
+    
+    
 
 # --- QUALITY MAPPING ---
 quality_mapping:
@@ -109,7 +133,9 @@ sleep_data_sources: []
 
 # --- CALENDAR SOURCE (SENSOR & FLAGS) ---
 # optional default sensor name used when no sensor is assigned in the
-# calendar.  If unset/NULL the Sensor column will remain NA for those days.
+# calendar. For new configs, prefer using `default: true` inside the
+# `sensor_files` entry. If that is missing, this fallback value is still
+# accepted for backwards compatibility.
 # The name supplied by the calendar may refer either to the config key or to
 # a sensor's optional `nickname` (case‑insensitive).  If the script is unable
 # to resolve a calendar value to a known sensor it will print a warning and

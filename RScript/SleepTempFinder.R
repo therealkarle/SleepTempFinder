@@ -82,6 +82,26 @@ if (is.null(config$sensor_files) && !is.null(config$temp_files)) {
   cat("Config warning: 'temp_files' renamed to 'sensor_files' for clarity\n")
 }
 
+# determine the default sensor from sensor_files.default = true, falling back
+# to calendar_default_sensor for older configs.
+get_default_sensor_id <- function(cfg) {
+  if (is.null(cfg$sensor_files) || length(cfg$sensor_files) == 0) return(NA_character_)
+  default_ids <- names(cfg$sensor_files)[sapply(cfg$sensor_files, function(x) isTRUE(x$default))]
+  if (length(default_ids) > 1L) {
+    cat(sprintf("Config warning: multiple sensor_files entries have default: true (%s); using first.\n",
+                paste(default_ids, collapse = ", ")))
+  }
+  if (length(default_ids) >= 1L) {
+    return(default_ids[[1]])
+  }
+  if (!is.null(cfg$calendar_default_sensor) && nzchar(cfg$calendar_default_sensor)) {
+    return(cfg$calendar_default_sensor)
+  }
+  NA_character_
+}
+
+default_sensor_id <- get_default_sensor_id(config)
+
 # extract commonly used sub-configs for convenience
 orders <- config$parse_orders
 loc <- config$locale
@@ -298,11 +318,16 @@ list_csv_files <- function(dir, recursive = FALSE) {
   list.files(path = dir, pattern = "\\.csv$", recursive = recursive, full.names = TRUE)
 }
 
-# strip trailing numeric suffixes in parentheses, e.g. "Foo (1).csv" -> "Foo.csv"
+# strip trailing numeric suffixes in parentheses, normalize separators,
+# and collapse whitespace so similarly named sensor files can match.
 canonical_basename <- function(path) {
   b <- basename(path)
-  # remove parenthetical digits before extension
+  # remove parenthetical digits before extension (e.g. Foo (1).csv -> Foo.csv)
   b <- sub("\\s*\\(\\d+\\)(?=\\.[^.]+$)", "", b, perl = TRUE)
+  # normalize underscores and multiple whitespace to single spaces
+  b <- gsub("[_\\s]+", " ", b)
+  b <- trimws(b)
+  b <- tolower(b)
   b
 }
 # helper used when config lists explicit files that might be renamed copies
@@ -312,8 +337,8 @@ expand_explicit <- function(explicit_paths, discovered) {
     if (p %in% discovered) {
       out <- c(out, p)
     } else {
-      base <- basename(p)
-      matches <- discovered[basename(discovered) == base]
+      base <- canonical_basename(p)
+      matches <- discovered[canonical_basename(discovered) == base]
       if (length(matches) > 0) {
         out <- c(out, matches)
       } else {
@@ -336,16 +361,22 @@ is_sleep_csv <- function(path, mapping) {
 
 # helper to inspect a sensor CSV and return the matching sensor_files entry (or NULL)
 detect_sensor_config <- function(path) {
-  base <- basename(path)
+  base <- canonical_basename(path)
   # explicit paths first
   for (id in names(config$sensor_files)) {
-    if (base == basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
+    if (base == canonical_basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
   }
   hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
                   error = function(e) character(0))
-  for (id in names(config$sensor_files)) {
-    f <- config$sensor_files[[id]]
-    if (all(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)) return(f)
+  candidates <- names(config$sensor_files)[sapply(config$sensor_files, function(f) {
+    all(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)
+  })]
+  if (length(candidates) == 1L) {
+    return(config$sensor_files[[candidates]])
+  }
+  if (length(candidates) > 1L) {
+    cat(sprintf("Config warning: ambiguous sensor match for file '%s' based on headers; candidates: %s. Explicit path required.\n",
+                base, paste(candidates, collapse = ", ") ) )
   }
   NULL
 }
@@ -369,9 +400,9 @@ get_sensor_file_info <- function(path) {
 # rather than the entry itself.  The ID is used later to restrict which
 # rows are included when a calendar entry specifies a particular sensor.
 identify_sensor_id <- function(path) {
-  base <- basename(path)
+  base <- canonical_basename(path)
   for (id in names(config$sensor_files)) {
-    if (base == basename(config$sensor_files[[id]]$path)) return(id)
+    if (base == canonical_basename(config$sensor_files[[id]]$path)) return(id)
   }
   # try header-based match as a fallback
   cfg <- detect_sensor_config(path)
@@ -505,22 +536,22 @@ unescape_ics <- function(val) {
 parse_sensor_flags <- function(text_value) {
   # text_value can come from either SUMMARY or DESCRIPTION (or both) of
   # an ics event.  We look for a `sensor=` assignment and an optional
-  # `flag`/`flags=` assignment.  Flags may be declared after the sensor
-  # (separated by a semicolon or comma) and multiple flags can be provided
-  # as a comma‑separated list.  Examples:
+  # `flag`/`flags=` or `tag`/`tags=` assignment.  Flags/Tags may be declared
+  # before or after the sensor assignment (separated by a semicolon or comma)
+  # and multiple values can be provided as a comma‑separated list. Examples:
   #   parse_sensor_flags("Sensor=foo; Flags=bar")
-  #   parse_sensor_flags("sensor=foo; flags=a,b,c")
-  #   parse_sensor_flags("flags=quiet; sensor=LivingRoom")
+  #   parse_sensor_flags("sensor=foo; tags=a,b,c")
+  #   parse_sensor_flags("Tags=quiet,urlaub; sensor=LivingRoom")
   text_value <- text_value %||% ""
 
-  # there may be more than one flags= declaration (e.g. summary and
+  # there may be more than one flags/tags declaration (e.g. summary and
   # description both include them) so use match_all and combine results.
   flags_raw_vec <- str_match_all(text_value,
-                                 regex("flags?\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))[[1]][,2]
+                                 regex("(?:flags?|tags?)\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))[[1]][,2]
   # to prevent sensor names that contain commas from being truncated we
-  # strip any flag assignments from the text before looking for `sensor=`.
+  # strip any flag/tag assignments from the text before looking for `sensor=`.
   text_no_flags <- str_replace_all(text_value,
-                                   regex("flags?\\s*=\\s*[^;\\n]+", ignore_case = TRUE), "")
+                                   regex("(?:flags?|tags?)\\s*=\\s*[^;\\n]+", ignore_case = TRUE), "")
 
   # now capture sensor; allow commas in the value but stop at semicolon or
   # newline (multi-day events may add trailing semicolons during combine).
@@ -984,12 +1015,11 @@ if (nrow(calendar_daily) > 0) {
                                   USE.NAMES = FALSE)
 }
 
-# if a default sensor is configured, fill only those rows that had no raw
-# label at all.  Do not override entries where the user supplied a value that
-# could not be resolved (we want those to remain NA so the script keeps both
-# sensors and the audit will show the mismatch).
-if (!is.null(config$calendar_default_sensor) && nzchar(config$calendar_default_sensor)) {
-  default_s <- config$calendar_default_sensor
+# if a default sensor is configured, use it for dates where the calendar
+# did not specify any sensor at all. Do not override entries where the user
+# supplied an unrecognized sensor label.
+if (!is.na(default_sensor_id)) {
+  default_s <- default_sensor_id
   n_na_before <- sum(is.na(calendar_daily$Sensor) & is.na(calendar_daily$Sensor_Raw))
   calendar_daily$Sensor[is.na(calendar_daily$Sensor) & is.na(calendar_daily$Sensor_Raw)] <- default_s
   if (n_na_before > 0) {
@@ -1041,10 +1071,28 @@ sleep_complete <- sleep_df_raw %>%
 
 # nightly mapping: compute per-night sensor averages and join calendar & sensor summaries
 # when a calendar entry specifies a sensor, only rows from that
-# sensor should contribute to the nightly average; otherwise all sensors are
-# considered.  To accomplish this we join the calendar information before
-# computing the averages and then conditionally filter `sensor_raw` inside the
-# rowwise mutate.
+# sensor should contribute to the nightly average; if no calendar sensor
+# was assigned, the configured default sensor is used.  To accomplish this we
+# join the calendar information before computing the averages and then
+# conditionally filter `sensor_raw` inside the rowwise mutate.
+
+calendar_default_sensor <- default_sensor_id
+
+# if multiple source files match the same night, pick the one with the most
+# valid sensor rows so that we use only one sensor file per night.
+select_best_sensor_by_file <- function(idx, sensor_raw, sensor_id = NA_character_) {
+  if (length(idx) == 0) return(idx)
+  if (!is.na(sensor_id)) {
+    keep <- !is.na(sensor_raw$Sensor_ID[idx]) & sensor_raw$Sensor_ID[idx] == sensor_id
+    idx <- idx[keep]
+  }
+  if (length(idx) == 0) return(idx)
+  files <- sensor_raw$Source_File[idx]
+  if (length(unique(files)) == 1L) return(idx)
+  counts <- table(files)
+  best_file <- names(counts)[which.max(counts)]
+  idx[files == best_file]
+}
 
 temp_mapped <- sleep_complete %>% 
   filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
@@ -1052,6 +1100,11 @@ temp_mapped <- sleep_complete %>%
   # carry the raw label so it can be referenced later when building the
   # review dataframe.
   left_join(calendar_daily %>% select(Date, Sensor, Sensor_Raw, Flags, Flags_List), by = "Date") %>%
+  mutate(
+    Sensor = ifelse(is.na(Sensor) & is.na(Sensor_Raw) & !is.na(calendar_default_sensor),
+                    calendar_default_sensor,
+                    Sensor)
+  ) %>%
   rowwise() %>% 
   mutate(
     # apply configurable padding when matching sensor rows
@@ -1059,9 +1112,7 @@ temp_mapped <- sleep_complete %>%
     .wak_pad = waketime + minutes(matching_padding_minutes),
     .idx_used = list({
       idx <- which(sensor_raw$timestamp >= .bed_pad & sensor_raw$timestamp <= .wak_pad)
-      if(!is.na(Sensor)) {
-        idx <- idx[sensor_raw$Sensor_ID[idx] == Sensor]
-      }
+      idx <- select_best_sensor_by_file(idx, sensor_raw, Sensor)
       idx
     }),
     # restrict to the selected sensor if one is assigned
@@ -1107,10 +1158,16 @@ nightly_review_df <- temp_mapped %>%
       }
       paste(files, collapse = "; ")
     }),
-    # the name we show should reflect what the calendar told us; if that
-    # value failed to resolve we also include the raw text so the user can
-    # spot the problem.
+    Actual_Sensor = map_chr(Sensor_Files, function(files) {
+      if (length(files) == 0) return(NA_character_)
+      ids <- unique(na.omit(sapply(files, identify_sensor_id)))
+      if (length(ids) == 0) return(NA_character_)
+      ids[1]
+    }),
+    # the name we show should reflect the sensor that was actually used.
+    # If the calendar assignment exists, it should agree with the actual file.
     Sensor_Names = case_when(
+      !is.na(Actual_Sensor) ~ Actual_Sensor,
       !is.na(Sensor) ~ Sensor,
       !is.na(Sensor_Raw) ~ paste0("(raw: ", Sensor_Raw, ")"),
       TRUE ~ map_chr(Sensor_Names, ~ paste(.x, collapse = "; "))
@@ -1123,6 +1180,17 @@ cat(sprintf("Review DF constructed: %d nights, %d unique sleep files (%d canonic
             n_distinct(nightly_review_df$Sleep_Name),
             n_distinct(unlist(nightly_review_df$Sensor_Files)),
             n_distinct(unlist(nightly_review_df$Sensor_Names))))
+
+mismatch_df <- nightly_review_df %>% filter(!is.na(Sensor) & !is.na(Actual_Sensor) & Sensor != Actual_Sensor)
+if (nrow(mismatch_df) > 0) {
+  cat(sprintf("Warning: %d nights with calendar sensor != actual sensor used:\n", nrow(mismatch_df)))
+  for (i in seq_len(nrow(mismatch_df))) {
+    row <- mismatch_df[i, ]
+    cat(sprintf("  %s: calendar=%s actual=%s files=%s\n",
+                format(row$Date), row$Sensor, row$Actual_Sensor,
+                paste(unlist(row$Sensor_Files), collapse = "; ")))
+  }
+}
 
 final_data_matched <- temp_mapped %>% 
   filter(
@@ -1265,7 +1333,16 @@ dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
   # Sensor_Files is a list-column; convert to semicolon-separated string for
   # ease of display.  Use Sensor_Names if you prefer canonical names instead.
-  mutate(Sensor_File = map_chr(Sensor_Files, ~ paste(.x, collapse = "; ")) ) %>%
+  mutate(
+    Sensor_File = map_chr(Sensor_Files, ~ paste(.x, collapse = "; ")),
+    Actual_Sensor = map_chr(Sensor_Files, function(files) {
+      if (is.null(files) || length(files) == 0) return(NA_character_)
+      ids <- unique(na.omit(sapply(files, identify_sensor_id)))
+      if (length(ids) == 0) return(NA_character_)
+      ids[1]
+    }),
+    Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
+  ) %>%
   select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
