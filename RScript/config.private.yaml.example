@@ -36,3 +36,7 @@ calendar_source:
 #     col_time: "Date"
 #     col_temp: "Temperature_Celsius(℃)"
 #     col_hum: "Relative_Humidity(%)"
+
+# Plot output mode override example:
+# plot:
+#   output_mode: "browser"  # or "rstudio"

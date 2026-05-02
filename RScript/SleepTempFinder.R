@@ -114,41 +114,37 @@ default_sensor_id <- get_default_sensor_id(config)
 orders <- config$parse_orders
 loc <- config$locale
 plot_cfg <- config$plot
+if (is.null(plot_cfg)) plot_cfg <- list()
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
-# Automatically enable httpgd when configured.
-# This improves VS Code plot history navigation by using the httpgd device.
-httpgd_started <- FALSE
-if (isTRUE(plot_cfg$enable_httpgd)) {
+# Plot output mode:
+# - "rstudio": use the normal graphics device and show plots in RStudio
+# - "browser": start httpgd for the VS Code/browser plot viewer
+plot_output_mode <- plot_cfg$output_mode
+if (is.null(plot_output_mode) || !nzchar(plot_output_mode)) {
+  plot_output_mode <- "rstudio"
+}
+plot_output_mode <- tolower(plot_output_mode)
+if (!plot_output_mode %in% c("rstudio", "browser")) {
+  warning(sprintf("Unknown plot.output_mode '%s'; falling back to 'rstudio'.", plot_output_mode))
+  plot_output_mode <- "rstudio"
+}
+
+if (plot_output_mode == "browser") {
   if (!requireNamespace("httpgd", quietly = TRUE)) {
     install.packages("httpgd")
   }
-  options(r.plot.useHttpgd = TRUE,
-          vsc.plot.useHttpgd = TRUE,
-          vsc.httpgd = TRUE)
-  cat(sprintf("httpgd enabled in config; interactive=%s\n", interactive()))
+  options(
+    r.plot.useHttpgd = TRUE,
+    vsc.plot.useHttpgd = TRUE,
+    vsc.httpgd = TRUE
+  )
   tryCatch({
     httpgd::hgd()
-    httpgd_started <- TRUE
-    cat("httpgd device started for plotting.\n")
+    cat("Browser plot mode enabled via httpgd.\n")
   }, error = function(e) {
     warning("Failed to start httpgd: ", conditionMessage(e), "\n")
-  })
-}
-
-# Optional fallback: open a native plot window on startup so users always
-# get a visible graphics device when running via VS Code "Run Source".
-open_native_window_on_start <- TRUE
-if (!is.null(plot_cfg$open_native_window_on_start)) {
-  open_native_window_on_start <- isTRUE(plot_cfg$open_native_window_on_start)
-}
-if (interactive() && open_native_window_on_start) {
-  tryCatch({
-    grDevices::dev.new(noRStudioGD = TRUE)
-    cat("Native R plot window opened on startup.\n")
-  }, error = function(e) {
-    warning("Failed to open native R plot window: ", conditionMessage(e), "\n")
   })
 }
 
