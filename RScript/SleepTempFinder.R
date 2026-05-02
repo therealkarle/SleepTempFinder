@@ -148,6 +148,14 @@ if (plot_output_mode == "browser") {
   })
 }
 
+browser_viewer_url <- NULL
+if (plot_output_mode == "browser") {
+  browser_viewer_url <- tryCatch(
+    httpgd::hgd_url(which = grDevices::dev.cur()),
+    error = function(e) NULL
+  )
+}
+
 # command-line arguments support (dry run, --filter)
 #
 # Optional flag: --dry-run  (suppress plots, useful for automated runs)
@@ -1615,4 +1623,9 @@ for(m in names(bio_vars)) {
   }
 }
 grid.arrange(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp=gpar(fontsize=12, font=2)))
+
+if (plot_output_mode == "browser" && !is.null(browser_viewer_url)) {
+  cat("\nBrowser viewer URL:\n")
+  cat(sprintf("%s\n", browser_viewer_url))
+}
 

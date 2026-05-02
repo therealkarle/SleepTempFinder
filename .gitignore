@@ -27,3 +27,7 @@ __pycache__/
 
 # Ignore private config overrides (should not be committed)
 RScript/config.private.yaml
+
+
+#venv
+.venv*
