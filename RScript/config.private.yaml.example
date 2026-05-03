@@ -40,3 +40,4 @@ calendar_source:
 # Plot output mode override example:
 # plot:
 #   output_mode: "browser"  # or "rstudio"
+#   auto_open_browser_viewer: true

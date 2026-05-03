@@ -156,6 +156,19 @@ if (plot_output_mode == "browser") {
   )
 }
 
+auto_open_browser_viewer <- FALSE
+if (!is.null(plot_cfg$auto_open_browser_viewer)) {
+  auto_open_browser_viewer <- isTRUE(plot_cfg$auto_open_browser_viewer)
+}
+if (plot_output_mode == "browser" && auto_open_browser_viewer && !is.null(browser_viewer_url)) {
+  tryCatch({
+    utils::browseURL(browser_viewer_url)
+    cat("Browser viewer opened in the default browser.\n")
+  }, error = function(e) {
+    warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
+  })
+}
+
 # command-line arguments support (dry run, --filter)
 #
 # Optional flag: --dry-run  (suppress plots, useful for automated runs)
