@@ -3,16 +3,16 @@
 # align on sleep periods, compute nightly averages, apply filters, and produce
 # statistics & plots.
 #
-# Changes since original version:
-#   * centralized date/time parsing orders via config
-#   * added locale configuration for sensor imports
-#   * moved plot colors/labels into config and derived vectors
-#   * tightened scope of intermediate variables using local()
-#   * removed obsolete dataframes and inline simple transforms
-#   * unified sensor header detection/lookup helpers
-#   * added dry-run flag to suppress plotting
-#   * added utility helpers (parse_datetime_safe, wake_date/nigh_date alias, map_sensor_to_nightly)
-#   * updated config.yaml with new sections (parse_orders, locale, plot)
+## Changes since original version:
+##   * centralized date/time parsing orders via config
+##   * added locale configuration for sensor imports
+##   * moved plot colors/labels into config and derived vectors
+##   * tightened scope of intermediate variables using local()
+##   * removed obsolete dataframes and inline simple transforms
+##   * unified sensor header detection/lookup helpers
+##   * added dry-run flag to suppress plotting
+##   * added utility helpers (parse_datetime_safe, wake_date/nigh_date alias, map_sensor_to_nightly)
+##   * updated config.yaml with new sections (parse_orders, locale, plot)
 #
 # --- 1. ENVIRONMENT SETUP ---
 if (!require("rstudioapi")) install.packages("rstudioapi")
@@ -118,56 +118,42 @@ if (is.null(plot_cfg)) plot_cfg <- list()
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
+auto_open_browser_viewer <- FALSE
 # Plot output mode:
 # - "rstudio": use the normal graphics device and show plots in RStudio
 # - "browser": start httpgd for the VS Code/browser plot viewer
+# - "both": run the exact same plotting logic first for RStudio, then
+#           start httpgd and run the same plotting logic again for browser
 plot_output_mode <- plot_cfg$output_mode
 if (is.null(plot_output_mode) || !nzchar(plot_output_mode)) {
   plot_output_mode <- "rstudio"
 }
 plot_output_mode <- tolower(plot_output_mode)
-if (!plot_output_mode %in% c("rstudio", "browser")) {
+if (!plot_output_mode %in% c("rstudio", "browser", "both")) {
   warning(sprintf("Unknown plot.output_mode '%s'; falling back to 'rstudio'.", plot_output_mode))
   plot_output_mode <- "rstudio"
 }
 
-if (plot_output_mode == "browser") {
-  if (!requireNamespace("httpgd", quietly = TRUE)) {
-    install.packages("httpgd")
-  }
-  options(
-    r.plot.useHttpgd = TRUE,
-    vsc.plot.useHttpgd = TRUE,
-    vsc.httpgd = TRUE
-  )
-  tryCatch({
-    httpgd::hgd()
-    cat("Browser plot mode enabled via httpgd.\n")
-  }, error = function(e) {
-    warning("Failed to start httpgd: ", conditionMessage(e), "\n")
-  })
-}
+# determine run modes sequence: 'both' -> c('rstudio','browser')
+run_modes <- if (plot_output_mode == "both") c("rstudio", "browser") else c(plot_output_mode)
 
-browser_viewer_url <- NULL
-if (plot_output_mode == "browser") {
-  browser_viewer_url <- tryCatch(
-    httpgd::hgd_url(which = grDevices::dev.cur()),
-    error = function(e) NULL
-  )
-}
-
+# httpgd-related options will be set if we will run browser mode at any point
 auto_open_browser_viewer <- FALSE
 if (!is.null(plot_cfg$auto_open_browser_viewer)) {
   auto_open_browser_viewer <- isTRUE(plot_cfg$auto_open_browser_viewer)
 }
-if (plot_output_mode == "browser" && auto_open_browser_viewer && !is.null(browser_viewer_url)) {
-  tryCatch({
-    utils::browseURL(browser_viewer_url)
-    cat("Browser viewer opened in the default browser.\n")
-  }, error = function(e) {
-    warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
-  })
-}
+  if ("browser" %in% run_modes) {
+    if (!requireNamespace("httpgd", quietly = TRUE)) {
+      install.packages("httpgd")
+    }
+  }
+
+# placeholder for browser viewer URL (populated when httpgd is started)
+browser_viewer_url <- NULL
+
+# ensure httpgd-based plotting is off by default so the first 'rstudio' pass
+# renders to the RStudio device even if previous runs enabled httpgd
+options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
 
 # command-line arguments support (dry run, --filter)
 #
@@ -1430,76 +1416,79 @@ calendar_days_after_rule_n <- nrow(calendar_daily)
 calendar_sensor_assigned_n <- sum(!is.na(temp_mapped$Sensor))
 calendar_flags_assigned_n <- sum(!is.na(temp_mapped$Flags))
 
-# --- OUTPUT: AUDIT ---
-cat("\n===========================================================\n")
-cat("                DATA QUALITY AUDIT\n")
-cat("===========================================================\n")
-cat(sprintf("Total nights detected:        %d\n", nrow(sleep_df_raw)))
-cat(sprintf("Nights used for analysis:     %d (unique dates %d)\n",
-            nrow(final_data_matched), n_distinct(final_data_matched$Date)))
-cat(sprintf("Nights excluded total:        %d\n", length(unique_excluded_dates)))
-cat("-----------------------------------------------------------\n")
-cat(sprintf("Reason: Missing Sleep Data:   %d\n", length(excluded_sleep_fmt)))
-if(length(excluded_sleep_fmt) > 0) cat(paste0("       [", paste(excluded_sleep_fmt, collapse = "], ["), "]\n"))
-cat(sprintf("Reason: Missing Room Data:    %d\n", length(excluded_sensor_fmt)))
-if(length(excluded_sensor_fmt) > 0) cat(paste0("       [", paste(excluded_sensor_fmt, collapse = "], ["), "]\n"))
-cat("-----------------------------------------------------------\n")
-cat(sprintf("Calendar days parsed:         %d\n", calendar_days_raw_n))
-cat(sprintf("Calendar days after 3-day:    %d\n", calendar_days_after_rule_n))
-cat(sprintf("Nights with Sensor assigned:  %d\n", calendar_sensor_assigned_n))
-cat(sprintf("Nights with Flags assigned:   %d\n", calendar_flags_assigned_n))
-if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
-  cat(sprintf("Analysis filter kept:         %d / %d\n", n_after_analysis_filter, n_before_analysis_filter))
-}
-cat("===========================================================\n\n")
+# --- Plot helper functions (extracted so the same logic can be called twice) ---
+# Define biomarker variables (sleep quality indicators)
+bio_vars <- c("Sleep_Score", "HRV", "RHR")
 
-# --- OUTPUT: DESCRIPTIVE STATISTICS ---
-sensor_nightly_raw <- sensor_raw %>%
-  mutate(Date = wake_date(timestamp)) %>% 
-  group_by(Date) %>%
-  summarise(Avg_Temp = mean(room_temp, na.rm=T), Avg_Rel_Hum = mean(rel_hum, na.rm=T), Avg_Abs_Hum = mean(abs_hum, na.rm=T), .groups = 'drop')
+metric_list <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
+# derive labels/colors from configuration, with fallbacks
+metric_labels <- unname(sapply(metric_list, function(m) {
+  plot_cfg$metric_labels[[m]] %||% m
+}))
+metric_colors <- unname(sapply(metric_list, function(m) {
+  plot_cfg$metric_colors[[m]] %||% "black"
+}))
 
-# compute counts of nights that have any data at all before/after filter; these
-# are *not* the same as the per-variable counts shown later.  A night can be
-# present only for humidity, for example, which increments the "used" total
-# but not the temperature-specific n value below.
-n_any_raw_prefilter <- sensor_nightly_prefilter %>%
-  filter(!is.na(Avg_Temp) | !is.na(Avg_Rel_Hum) | !is.na(Avg_Abs_Hum)) %>%
-  nrow()
-n_any_raw_after <- sensor_nightly_raw %>%
-  filter(!is.na(Avg_Temp) | !is.na(Avg_Rel_Hum) | !is.na(Avg_Abs_Hum)) %>%
-  nrow()
-
-cat("                DESCRIPTIVE STATISTICS\n")
-cat("===========================================================\n\n")
-# show some overall counts to avoid confusion between variable-specific n's
-cat(sprintf("Nights used for analysis (any metric): %d\n", nrow(final_data_matched)))
-cat(sprintf("Nights with any raw sensor data before filter: %d\n", n_any_raw_prefilter))
-cat(sprintf("Nights with any raw sensor data after filter: %d\n\n", n_any_raw_after))
-cat("TABLE 1: BIOMARKERS (Garmin Data)\n")
-bio_vars <- list("Sleep_Score" = "Sleep_Score", "HRV" = "HRV", "RHR" = "RHR")
-for(v_name in names(bio_vars)) {
-  m_data <- final_data_matched[[bio_vars[[v_name]]]]; r_data <- sleep_complete[[bio_vars[[v_name]]]]
-  cat(sprintf("%-15s (Used) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", v_name, mean(m_data, na.rm=T), sd(m_data, na.rm=T), min(m_data, na.rm=T), max(m_data, na.rm=T), sum(!is.na(m_data))))
-  cat(sprintf("%-15s (Raw)  | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), sum(!is.na(r_data))))
-}
-cat("\nTABLE 2: ROOM DATA (Nightly Averages)\n")
-cat("  (n values below are count of non‑missing nights for that variable)\n")
-room_vars <- list("Room Temp" = "Avg_Temp", "Rel Humidity" = "Avg_Rel_Hum", "Abs Humidity" = "Avg_Abs_Hum")
-for(v_name in names(room_vars)) {
-  m_data <- final_data_matched[[room_vars[[v_name]]]]
-  r_data <- sensor_nightly_raw[[room_vars[[v_name]]]]
-  pre_data <- sensor_nightly_prefilter[[room_vars[[v_name]]]]
-  cat(sprintf("%-15s (Used) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", v_name, mean(m_data, na.rm=T), sd(m_data, na.rm=T), min(m_data, na.rm=T), max(m_data, na.rm=T), sum(!is.na(m_data))))
-  cat(sprintf("%-15s (Raw after filter) | Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n", "", mean(r_data, na.rm=T), sd(r_data, na.rm=T), min(r_data, na.rm=T), max(r_data, na.rm=T), n_any_raw_after))
-  cat(sprintf("%-15s (Raw before filter)| Mean: %6.2f | SD: %6.2f | Min: %6.2f | Max: %6.2f | n: %d\n\n", "", mean(pre_data, na.rm=T), sd(pre_data, na.rm=T), min(pre_data, na.rm=T), max(pre_data, na.rm=T), n_any_raw_prefilter))
+plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, dry_run) {
+  for(i in seq_along(metric_list)) {
+    m <- metric_list[i]
+    p <- ggplot(data_viz, aes(x = Date, y = .data[[m]])) +
+      geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
+      geom_point(color = metric_colors[i], size = 2, na.rm = TRUE) +
+      scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
+      labs(title = metric_labels[i], x = NULL, y = NULL) +
+      theme_minimal(base_size = 12) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
+            plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
+    if(!dry_run) print(p)
+  }
 }
 
-# --- 4. DASHBOARD DATAFRAME ---
-# Build a dashboard table keeping original structure. Filter out missing Date rows,
-# and add a human-readable date string for display.  Also include the sensor
-# file(s) that contributed to each night so the dashboard can show which source
-# the merged room data came from.
+plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run) {
+  # Individual Scatter Plots
+  for(env_name in names(env_analysis_vars)) {
+    e_col <- env_analysis_vars[[env_name]]$col
+    e_unit <- env_analysis_vars[[env_name]]$unit
+    for(m in bio_vars) {
+      opt <- optima_storage[[paste0(env_name, "_", m)]]
+      p <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
+        geom_point(alpha = 0.5, color = "darkgrey") +
+        geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
+        labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
+        theme_minimal()
+      if(!is.null(opt)) {
+        p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
+          annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
+      }
+      if(!dry_run) print(p)
+    }
+  }
+
+  # 3x3 Matrix Dashboard - COLORED & WITH OPTIMA
+  matrix_plots <- list()
+  for(m in bio_vars) {
+    m_color <- metric_colors[match(m, metric_list)]
+    for(env_name in names(env_analysis_vars)) {
+      e_col <- env_analysis_vars[[env_name]]$col
+      e_unit <- env_analysis_vars[[env_name]]$unit
+      opt <- optima_storage[[paste0(env_name, "_", m)]]
+
+      p_mat <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
+        geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
+        theme_minimal(base_size = 8) + 
+        labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
+        theme(plot.title = element_text(size = 7, face = "bold"))
+
+      if(!is.null(opt)) {
+        p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
+      }
+
+      matrix_plots[[length(matrix_plots) + 1]] <- p_mat
+    }
+  }
+  if(!dry_run) grid.arrange(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp=gpar(fontsize=12, font=2)))
+}
+
 dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
   # Sensor_Files is a list-column; convert to semicolon-separated string for
@@ -1532,7 +1521,7 @@ for(env_name in names(env_analysis_vars)) {
   e_col <- env_analysis_vars[[env_name]]$col
   e_unit <- env_analysis_vars[[env_name]]$unit
   cat(sprintf("\n>>> IMPACT OF %s:\n", toupper(env_name)))
-  for(m in names(bio_vars)) {
+  for(m in bio_vars) {
     sub <- final_data_matched %>% filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
     if(nrow(sub) < 5) next
     
@@ -1592,53 +1581,24 @@ for(i in seq_along(metric_list)) {
 }
 
 
-
-# --- 7. SCATTER PLOTS & COLORED MATRIX ---
-# Individual Scatter Plots
-for(env_name in names(env_analysis_vars)) {
-  e_col <- env_analysis_vars[[env_name]]$col
-  e_unit <- env_analysis_vars[[env_name]]$unit
-  for(m in names(bio_vars)) {
-    opt <- optima_storage[[paste0(env_name, "_", m)]]
-    p <- ggplot(final_data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
-      geom_point(alpha = 0.5, color = "darkgrey") +
-      geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
-      labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
-      theme_minimal()
-    if(!is.null(opt)) {
-      p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
-        annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
+for (mode in run_modes) {
+  if (mode == "browser") {
+    options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
+    tryCatch({ httpgd::hgd(); cat("Browser plot mode enabled via httpgd.\n") }, error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n"))
+    browser_viewer_url <- tryCatch(httpgd::hgd_url(which = grDevices::dev.cur()), error = function(e) NULL)
+    if (auto_open_browser_viewer && !is.null(browser_viewer_url)) {
+      tryCatch({ utils::browseURL(browser_viewer_url); cat("Browser viewer opened in the default browser.\n") }, error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n"))
     }
-    if(!dry_run) print(p)
+  } else {
+    options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
   }
-}
+  
+  if(!dry_run) plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, dry_run)
+  if(!dry_run) plot_scatter_and_matrix(final_data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run)
 
-# 3x3 Matrix Dashboard - COLORED & WITH OPTIMA
-matrix_plots <- list()
-for(m in names(bio_vars)) {
-  m_color <- metric_colors[match(m, metric_list)]
-  for(env_name in names(env_analysis_vars)) {
-    e_col <- env_analysis_vars[[env_name]]$col
-    e_unit <- env_analysis_vars[[env_name]]$unit
-    opt <- optima_storage[[paste0(env_name, "_", m)]]
-    
-    p_mat <- ggplot(final_data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
-      geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
-      theme_minimal(base_size = 8) + 
-      labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
-      theme(plot.title = element_text(size = 7, face = "bold"))
-    
-    if(!is.null(opt)) {
-      p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
-    }
-    
-    matrix_plots[[length(matrix_plots) + 1]] <- p_mat
+  if (mode == "browser" && !is.null(browser_viewer_url)) {
+    cat("\nBrowser viewer URL:\n")
+    cat(sprintf("%s\n", browser_viewer_url))
   }
-}
-grid.arrange(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp=gpar(fontsize=12, font=2)))
-
-if (plot_output_mode == "browser" && !is.null(browser_viewer_url)) {
-  cat("\nBrowser viewer URL:\n")
-  cat(sprintf("%s\n", browser_viewer_url))
 }
 

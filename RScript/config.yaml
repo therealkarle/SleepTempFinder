@@ -208,7 +208,11 @@ plot:
   # Plot output mode:
   # - rstudio: use the normal R graphics device and show plots in RStudio
   # - browser: start httpgd for the VS Code/browser plot viewer
-  output_mode: "browser"
+  # - both: first render exactly as in 'rstudio', then render the same plots
+  #         again to an httpgd browser viewer. This runs the same plotting
+  #         logic twice (RStudio then browser) without opening additional
+  #         RStudio graphic devices.
+  output_mode: "both"
   # When true and output_mode is browser, open the viewer URL in the system
   # browser as soon as the httpgd server is ready.
   auto_open_browser_viewer: true
