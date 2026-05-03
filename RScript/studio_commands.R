@@ -31,12 +31,25 @@ cat("Command Syntax: run_analysis(date=NULL, flags=NULL, sensors=NULL, dry_run=F
     "  optional and when first it can be supplied without naming.\n\n",
     "  `filter` accepts a raw string (e.g. '2025;Flags=Hochlitten' or 'temp>18').\n",
     "  and overrides other arguments.  \n\n\n",
-    "  The filter grammar now supports logical expressions on any numeric column (e.g. SleepScore>80, 18<temp<22).\n",
+    "  `flags` now supports complex boolean expressions:\n",
+    "    - OR (,)       : A, B   →  true if A or B is set\n",
+    "    - AND (&)      : A & B  →  true if both A and B are set\n",
+    "    - NOT (!)      : !A     →  true if A is NOT set\n",
+    "    - XOR (*)      : A * B  →  true if exactly one is set\n",
+    "    - Parentheses  : (A & B), !C\n",
+    "    - Precedence   : ! > * > & > ,\n\n",
+    "  You can also use R comparison syntax (auto-converted to FlagsExpr):\n",
+    "    - flags != 'Hochlitten'  →  FlagsExpr=!Hochlitten\n",
+    "    - flags == 'Hochlitten'  →  FlagsExpr=Hochlitten\n",
+    "    - flags %%in%% c('A', 'B') →  FlagsExpr=A, B\n\n",
+    "  The filter grammar also supports logical expressions on any numeric column (e.g. SleepScore>80, 18<temp<22).\n",
     "  Unquoted comparison expressions can also be supplied \n",
     "  – the first argument is treated as a filter\n",
     "    if it looks like a logical test (run_analysis(temp>18)).\n\n",
     "Example: run_analysis('2025'), run_analysis(flags='Hochlitten'), run_analysis(filter='temp>18'),\n",
-    "         run_analysis('01.2025', sensors='Wohnwagen'), run_analysis(filter='SleepScore>80')\n")
+    "         run_analysis('01.2025', sensors='Wohnwagen'), run_analysis(filter='SleepScore>80'),\n",
+    "         run_analysis(flags='(Urlaub, Wohnmobil) & !HomeOffice'),\n",
+    "         run_analysis(flags != 'Hochlitten')\n")
 # The primary helper is `run_analysis()`, which sets an environment variable
 # that the main script reads when in interactive mode.  (Recent updates also
 # ensure any duplicated sleep records for the same calendar date are collapsed
@@ -59,9 +72,65 @@ cat("Command Syntax: run_analysis(date=NULL, flags=NULL, sensors=NULL, dry_run=F
 #   run_analysis(filter = 'Flags=Hochlitten|Urlaub')  # raw string overrides others
 #   run_analysis(filter = 'temp>18')              # keep nights with average temp > 18°C
 #   run_analysis(filter = 'SleepScore>80')         # biomarker filter example
-#
-# You can also define simple one‑line wrappers below for frequently used
-# filters (pre‑configured commands).
+# Helper: Convert R comparison expressions like `flags != 'X'` to FlagsExpr format
+# Examples:
+#   flags != 'Hochlitten'     →  !Hochlitten
+#   flags == 'Hochlitten'     →  Hochlitten
+#   flags %in% c('A', 'B')    →  A, B
+#   !(flags %in% c('A'))      →  !A
+convert_flag_comparison <- function(expr_str) {
+  expr_str <- trimws(expr_str)
+  expr_str <- gsub(" ", "", expr_str, fixed = TRUE)  # Remove ALL whitespace
+  
+  # Pattern: !(flags op value)
+  if (grepl("^!\\(flags", expr_str, perl = TRUE)) {
+    # !(flags == 'X')  →  !X
+    # !(flags %in% c(...))  →  !(A, B)
+    inner <- sub("^!\\(flags(.*)\\)$", "\\1", expr_str, perl = TRUE)
+    inner_result <- convert_flag_comparison(paste0("flags", inner))
+    if (!is.null(inner_result)) {
+      return(paste0("!(", inner_result, ")"))
+    }
+  }
+  
+  # Pattern: flags != 'value' (with or without quotes)
+  if (grepl("^flags!=", expr_str, perl = TRUE)) {
+    value <- sub("^flags!='(.*)'$", "\\1", expr_str, perl = TRUE)
+    if (value == expr_str) {
+      value <- sub('^flags!="(.*)"$', "\\1", expr_str, perl = TRUE)
+    }
+    if (value != expr_str) {
+      return(paste0("!", value))
+    }
+  }
+  
+  # Pattern: flags == 'value' (with or without quotes)
+  if (grepl("^flags==", expr_str, perl = TRUE)) {
+    value <- sub("^flags=='(.*)'$", "\\1", expr_str, perl = TRUE)
+    if (value == expr_str) {
+      value <- sub('^flags=="(.*)"$', "\\1", expr_str, perl = TRUE)
+    }
+    if (value != expr_str) {
+      return(value)
+    }
+  }
+  
+  # Pattern: flags %in% c('A', 'B', ...) or flags %in% c("A", "B", ...)
+  if (grepl("^flags%in%c\\(", expr_str, perl = TRUE)) {
+    values_str <- sub("^flags%in%c\\((.*)\\)$", "\\1", expr_str, perl = TRUE)
+    # Split by comma and clean quotes
+    values <- unlist(strsplit(values_str, ",", fixed = TRUE))
+    values <- gsub("^'|'$", "", trimws(values))
+    values <- gsub('^"|"$', "", values)
+    values <- values[nzchar(values)]
+    if (length(values) > 0) {
+      return(paste(values, collapse = ","))
+    }
+  }
+  
+  # If no pattern matched, return original
+  return(NULL)
+}
 
 run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FALSE, filter = NULL) {
   # signature arranged so the first positional argument is `date`.
@@ -71,13 +140,31 @@ run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FA
   # support unquoted expressions in `date` or `filter` by deparsing the
   # promise.  this allows `run_analysis(temp>18)` (or equivalently
   # `run_analysis(filter=temp>18)`) to work without needing manual quotes.
+  
+  # Capture all unevaluated arguments
   date_expr <- substitute(date)
   filter_expr <- substitute(filter)
+  
+  # NEW: Check if date_expr is a flags comparison (e.g., flags != 'Hochlitten')
   if (is.null(filter) && is.call(date_expr)) {
-    # treat a bare call passed as first arg as if it were the filter string
-    filter <- deparse(date_expr)
-    date <- NULL
+    # Check if this is a comparison/membership operator on "flags"
+    deparse_str <- deparse(date_expr)
+    
+    # Better regex: check for flags with comparison operators
+    if (grepl("flags\\s*(==|!=|%in%)", deparse_str, perl = TRUE)) {
+      # Convert to FlagsExpr format
+      converted <- convert_flag_comparison(deparse_str)
+      if (!is.null(converted)) {
+        filter <- paste0("FlagsExpr=", converted)
+        date <- NULL
+      }
+    } else {
+      # Not a flags comparison, treat as normal filter expression
+      filter <- deparse_str
+      date <- NULL
+    }
   }
+  
   if (!is.null(filter) && !is.character(filter)) {
     # convert non-character filter values (e.g. expressions) to string
     filter <- deparse(filter_expr)
@@ -95,7 +182,13 @@ run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FA
     }
     if (!is.null(flags)) {
       if (length(flags) > 1) flags <- paste(flags, collapse = ",")
-      parts <- c(parts, paste0("Flags=", flags))
+      # NEW: detect if flags contains boolean operators
+      # If it does, use FlagsExpr= instead of Flags=
+      if (grepl("[&,*!()]", flags, perl = TRUE)) {
+        parts <- c(parts, paste0("FlagsExpr=", flags))
+      } else {
+        parts <- c(parts, paste0("Flags=", flags))
+      }
     }
     if (!is.null(sensors)) {
       if (length(sensors) > 1) sensors <- paste(sensors, collapse = ",")

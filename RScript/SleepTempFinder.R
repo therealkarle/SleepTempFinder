@@ -30,6 +30,9 @@ utils::globalVariables(
   c("Date", "Sensor", "Flags", "Flags_List", "sensor_values", "flags_values", ".flags_vec")
 )
 
+# Load flag expression parser for complex boolean flag expressions
+source("flag_expression_parser.R", local = FALSE)
+
 # always try to run from the script's directory so relative paths work.
 # this works in both interactive (RStudio) and non-interactive invocations.
 get_script_path <- function() {
@@ -307,8 +310,11 @@ split_list_token <- function(val) {
 }
 
 # parse the custom --filter argument; returns a list containing
-#   enabled (bool), sensor_include, flags_include, flags_mode,
+#   enabled (bool), sensor_include, flags_include, flags_mode, flags_ast,
 #   date_start, date_end (Date or NULL)
+# 
+# NEW: Supports FlagsExpr= for complex boolean expressions with &, |, !, *
+# Example: FlagsExpr=(Urlaub, Wohnmobil) & !HomeOffice
 parse_filter_string <- function(arg) {
   # expanded filter grammar now supports arbitrary logical expressions
   # referring to columns present in the final dataset.  Unquoted expressions
@@ -318,6 +324,7 @@ parse_filter_string <- function(arg) {
               sensor_include = character(0),
               flags_include = character(0),
               flags_mode = "any",
+              flags_ast = NULL,
               date_start = NULL,
               date_end = NULL,
               expr = character(0))
@@ -325,7 +332,15 @@ parse_filter_string <- function(arg) {
   for (tok in tokens) {
     tok <- trimws(tok)
     if (tok == "") next
-    if (grepl("^(?i)flags=", tok, perl = TRUE)) {
+    if (grepl("^(?i)flagsexpr=", tok, perl = TRUE)) {
+      # NEW: Complex boolean expression for flags
+      body <- sub("^(?i)flagsexpr=", "", tok, perl = TRUE)
+      tryCatch({
+        cfg$flags_ast <- parse_flag_expression(body)
+      }, error = function(e) {
+        warning(sprintf("Failed to parse FlagsExpr: %s\nError: %s", body, e$message))
+      })
+    } else if (grepl("^(?i)flags=", tok, perl = TRUE)) {
       body <- sub("^(?i)flags=", "", tok, perl = TRUE)
       if (grepl("\\|", body)) {
         cfg$flags_mode <- "any"
@@ -989,13 +1004,23 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
   flags_include <- trim_vector(unlist(filter_cfg$flags_include %||% character(0)))
   flags_mode <- tolower(filter_cfg$flags_mode %||% "any")
   if (!flags_mode %in% c("any", "all")) flags_mode <- "any"
+  flags_ast <- filter_cfg$flags_ast
 
   out <- df
   if (length(sensor_include) > 0 && "Sensor" %in% names(out)) {
     out <- out %>% filter(!is.na(Sensor), Sensor %in% sensor_include)
   }
 
-  if (length(flags_include) > 0 && "Flags" %in% names(out)) {
+  # NEW: If flags_ast is provided (complex boolean expression), use it
+  if (!is.null(flags_ast) && "Flags" %in% names(out)) {
+    out <- out %>%
+      mutate(.flags_vec = map(Flags, split_flags)) %>%
+      filter(map_lgl(.flags_vec, function(row_flags) {
+        evaluate_flag_ast(flags_ast, row_flags)
+      })) %>%
+      select(-.flags_vec)
+  } else if (length(flags_include) > 0 && "Flags" %in% names(out)) {
+    # OLD: Simple flags filter (backward compatibility)
     out <- out %>%
       mutate(.flags_vec = map(Flags, split_flags)) %>%
       filter(map_lgl(.flags_vec, function(row_flags) {
@@ -1007,10 +1032,87 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
   # numeric/column expressions
   exprs <- trim_vector(unlist(filter_cfg$expr %||% character(0)))
   if (length(exprs) > 0) {
-    # combine into single logical expression
-    combined <- paste(sapply(exprs, normalize_expr, df = out), collapse = " & ")
-    # use rlang to parse safely
-    out <- out %>% filter(!!rlang::parse_expr(combined))
+    # IMPROVED: Before evaluating as column expressions, separate flag comparisons
+    flag_exprs <- character(0)
+    col_exprs <- character(0)
+    
+    for (expr in exprs) {
+      # Check if this looks like a flags comparison: flags op value
+      if (grepl("flags\\s*(==|!=|%in%)", expr, perl = TRUE)) {
+        cat("[apply_analysis_subset_filter] Detected flag comparison in expr:", expr, "\n")
+        flag_exprs <- c(flag_exprs, expr)
+      } else {
+        col_exprs <- c(col_exprs, expr)
+      }
+    }
+    
+    # Process flag expressions by converting them to flags_ast and evaluating
+    if (length(flag_exprs) > 0) {
+      cat("[apply_analysis_subset_filter] Processing", length(flag_exprs), "flag expressions\n")
+      
+      for (expr in flag_exprs) {
+        # Convert flag comparison expression to FlagsExpr format
+        expr_clean <- trimws(expr)
+        expr_clean <- gsub(" ", "", expr_clean, fixed = TRUE)
+        
+        converted_expr <- NULL
+        
+        # Pattern: flags != 'value'
+        if (grepl("^flags!=", expr_clean, perl = TRUE)) {
+          value <- sub("^flags!='(.*)'$", "\\1", expr_clean, perl = TRUE)
+          if (value == expr_clean) {
+            value <- sub('^flags!="(.*)"$', "\\1", expr_clean, perl = TRUE)
+          }
+          if (value != expr_clean) {
+            converted_expr <- paste0("!", value)
+          }
+        }
+        # Pattern: flags == 'value'
+        else if (grepl("^flags==", expr_clean, perl = TRUE)) {
+          value <- sub("^flags=='(.*)'$", "\\1", expr_clean, perl = TRUE)
+          if (value == expr_clean) {
+            value <- sub('^flags=="(.*)"$', "\\1", expr_clean, perl = TRUE)
+          }
+          if (value != expr_clean) {
+            converted_expr <- value
+          }
+        }
+        # Pattern: flags %in% c(...)
+        else if (grepl("^flags%in%c\\(", expr_clean, perl = TRUE)) {
+          values_str <- sub("^flags%in%c\\((.*)\\)$", "\\1", expr_clean, perl = TRUE)
+          values <- unlist(strsplit(values_str, ",", fixed = TRUE))
+          values <- gsub("^'|'$", "", trimws(values))
+          values <- gsub('^"|"$', "", values)
+          values <- values[nzchar(values)]
+          if (length(values) > 0) {
+            converted_expr <- paste(values, collapse = ",")
+          }
+        }
+        
+        # If we successfully converted, parse and evaluate as flag AST
+        if (!is.null(converted_expr)) {
+          cat("[apply_analysis_subset_filter] Converted:", expr, "->", converted_expr, "\n")
+          tryCatch({
+            flag_ast <- parse_flag_expression(converted_expr)
+            out <- out %>%
+              mutate(.flags_vec = map(Flags, split_flags)) %>%
+              filter(map_lgl(.flags_vec, function(row_flags) {
+                evaluate_flag_ast(flag_ast, row_flags)
+              })) %>%
+              select(-.flags_vec)
+          }, error = function(e) {
+            cat("[ERROR] Failed to parse flag expression:", converted_expr, "\n")
+            cat("[ERROR]", e$message, "\n")
+          })
+        }
+      }
+    }
+    
+    # Process remaining column expressions
+    if (length(col_exprs) > 0) {
+      combined <- paste(sapply(col_exprs, normalize_expr, df = out), collapse = " & ")
+      out <- out %>% filter(!!rlang::parse_expr(combined))
+    }
   }
 
   out
