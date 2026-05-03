@@ -1440,7 +1440,7 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
       theme_minimal(base_size = 12) +
       theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
             plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
-    if(!dry_run) print(p)
+    if(!dry_run) tryCatch(print(p), error = function(e) warning("Plot failed: ", conditionMessage(e), "\n"))
   }
 }
 
@@ -1584,10 +1584,10 @@ for(i in seq_along(metric_list)) {
 for (mode in run_modes) {
   if (mode == "browser") {
     options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
-    tryCatch({ httpgd::hgd(); cat("Browser plot mode enabled via httpgd.\n") }, error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n"))
+    tryCatch({ invisible(capture.output(httpgd::hgd())) }, error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n"))
     browser_viewer_url <- tryCatch(httpgd::hgd_url(which = grDevices::dev.cur()), error = function(e) NULL)
     if (auto_open_browser_viewer && !is.null(browser_viewer_url)) {
-      tryCatch({ utils::browseURL(browser_viewer_url); cat("Browser viewer opened in the default browser.\n") }, error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n"))
+      tryCatch({ utils::browseURL(browser_viewer_url) }, error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n"))
     }
   } else {
     options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
