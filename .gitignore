@@ -5,6 +5,7 @@
 .Ruserdata
 .Rprofile
 .Renviron
+*Rproj
 
 # R packages and intermediate files
 *.RData
