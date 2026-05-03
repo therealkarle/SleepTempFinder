@@ -208,9 +208,10 @@ plot:
   # Plot output mode:
   # - rstudio: use the normal R graphics device and show plots in RStudio
   # - browser: start httpgd for the VS Code/browser plot viewer
-  output_mode: "browser"
-  # When true and output_mode is browser, open the viewer URL in the system
-  # browser as soon as the httpgd server is ready.
+  # - both: draw once in RStudio and once in the browser viewer
+  output_mode: "both"
+  # When true and output_mode uses the browser viewer, open the viewer URL in
+  # the system browser as soon as the httpgd server is ready.
   auto_open_browser_viewer: true
   metric_colors:
     room_temp: "#ff7f0e"    # orange

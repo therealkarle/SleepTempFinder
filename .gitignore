@@ -5,6 +5,9 @@
 .Ruserdata
 .Rprofile
 .Renviron
+SleepTempFinder.Rproj
+*.Rproj.user
+*.Rproj
 
 # R packages and intermediate files
 *.RData
@@ -31,3 +34,4 @@ RScript/config.private.yaml
 
 #venv
 .venv*
+.positai

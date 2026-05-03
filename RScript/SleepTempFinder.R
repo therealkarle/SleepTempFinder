@@ -121,17 +121,42 @@ matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.in
 # Plot output mode:
 # - "rstudio": use the normal graphics device and show plots in RStudio
 # - "browser": start httpgd for the VS Code/browser plot viewer
+# - "both": draw plots in both places
 plot_output_mode <- plot_cfg$output_mode
 if (is.null(plot_output_mode) || !nzchar(plot_output_mode)) {
   plot_output_mode <- "rstudio"
 }
 plot_output_mode <- tolower(plot_output_mode)
-if (!plot_output_mode %in% c("rstudio", "browser")) {
+if (!plot_output_mode %in% c("rstudio", "browser", "both")) {
   warning(sprintf("Unknown plot.output_mode '%s'; falling back to 'rstudio'.", plot_output_mode))
   plot_output_mode <- "rstudio"
 }
 
-if (plot_output_mode == "browser") {
+use_browser_viewer <- plot_output_mode %in% c("browser", "both")
+use_rstudio_plotter <- plot_output_mode %in% c("rstudio", "both")
+
+standard_plot_device <- NULL
+browser_plot_device <- NULL
+if (use_browser_viewer && plot_output_mode == "both") {
+  standard_plot_device <- grDevices::dev.cur()
+  if (is.null(standard_plot_device) || standard_plot_device <= 1L) {
+    standard_plot_device <- tryCatch({
+      if (.Platform$OS.type == "windows") {
+        grDevices::windows()
+      } else if (capabilities("X11")) {
+        grDevices::X11()
+      } else {
+        grDevices::dev.new()
+      }
+      grDevices::dev.cur()
+    }, error = function(e) {
+      warning("plot.output_mode 'both' could not open a standard graphics device: ", conditionMessage(e), "\n")
+      NULL
+    })
+  }
+}
+
+if (use_browser_viewer) {
   if (!requireNamespace("httpgd", quietly = TRUE)) {
     install.packages("httpgd")
   }
@@ -142,6 +167,7 @@ if (plot_output_mode == "browser") {
   )
   tryCatch({
     httpgd::hgd()
+    browser_plot_device <- grDevices::dev.cur()
     cat("Browser plot mode enabled via httpgd.\n")
   }, error = function(e) {
     warning("Failed to start httpgd: ", conditionMessage(e), "\n")
@@ -149,7 +175,7 @@ if (plot_output_mode == "browser") {
 }
 
 browser_viewer_url <- NULL
-if (plot_output_mode == "browser") {
+if (use_browser_viewer) {
   browser_viewer_url <- tryCatch(
     httpgd::hgd_url(which = grDevices::dev.cur()),
     error = function(e) NULL
@@ -160,13 +186,66 @@ auto_open_browser_viewer <- FALSE
 if (!is.null(plot_cfg$auto_open_browser_viewer)) {
   auto_open_browser_viewer <- isTRUE(plot_cfg$auto_open_browser_viewer)
 }
-if (plot_output_mode == "browser" && auto_open_browser_viewer && !is.null(browser_viewer_url)) {
+if (use_browser_viewer && auto_open_browser_viewer && !is.null(browser_viewer_url)) {
   tryCatch({
     utils::browseURL(browser_viewer_url)
     cat("Browser viewer opened in the default browser.\n")
   }, error = function(e) {
     warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
   })
+}
+
+render_plot <- function(draw_plot) {
+  if (dry_run) {
+    return(invisible(NULL))
+  }
+  # In 'both' mode: print once to the standard graphics device (RStudio/window)
+  # and once to the httpgd browser device. We avoid record/replay and instead
+  # explicitly set the target device and print the ggplot object twice.
+  if (plot_output_mode == "both") {
+    # Ensure standard device exists
+    if (is.null(standard_plot_device) || standard_plot_device <= 1L) {
+      standard_plot_device <- tryCatch({
+        if (.Platform$OS.type == "windows") grDevices::windows() else if (capabilities("X11")) grDevices::X11() else grDevices::dev.new()
+        grDevices::dev.cur()
+      }, error = function(e) NULL)
+    }
+
+    # Try printing to standard device first (if available)
+    if (!is.null(standard_plot_device) && standard_plot_device > 1L) {
+      tryCatch({
+        grDevices::dev.set(standard_plot_device)
+        draw_plot()
+      }, error = function(e) {
+        warning("Failed to draw on standard graphics device: ", conditionMessage(e))
+      })
+    }
+
+    # Then print to browser device (start httpgd if needed)
+    if (is.null(browser_plot_device) && use_browser_viewer) {
+      tryCatch({
+        httpgd::hgd()
+        browser_plot_device <<- grDevices::dev.cur()
+      }, error = function(e) {
+        warning("Could not start httpgd for browser plotting: ", conditionMessage(e))
+      })
+    }
+
+    if (!is.null(browser_plot_device) && browser_plot_device > 1L) {
+      tryCatch({
+        grDevices::dev.set(browser_plot_device)
+        draw_plot()
+      }, error = function(e) {
+        warning("Failed to draw on browser httpgd device: ", conditionMessage(e))
+      })
+    }
+
+    return(invisible(NULL))
+  }
+
+  # Default: single-target rendering (rstudio or browser)
+  draw_plot()
+  invisible(NULL)
 }
 
 # command-line arguments support (dry run, --filter)
@@ -649,54 +728,62 @@ parse_ics_time <- function(value) {
   if (is.na(value) || value == "") return(NA)
   val <- str_trim(value)
   if (str_detect(val, "^\\d{8}$")) return(ymd(val, quiet = TRUE))
-  if (str_detect(val, "^\\d{8}T\\d{6}Z$")) return(ymd_hms(val, tz = "UTC", quiet = TRUE))
-  if (str_detect(val, "^\\d{8}T\\d{6}$")) return(ymd_hms(val, quiet = TRUE))
-  if (str_detect(val, "^\\d{8}T\\d{4}$")) return(parse_date_time(val, orders = "Ymd HM", quiet = TRUE))
-  parse_date_time(val, orders = c("Ymd HMS", "Ymd HM", "Y-m-d H:M:S", "Y-m-d H:M", "Y-m-d"), quiet = TRUE)
-}
+  # In 'both' mode: behave like 'browser' and 'rstudio' sequentially.
+  # Render to browser first (this matches the known-working browser path),
+  # then render to a standard graphics device.
+  if (plot_output_mode == "both") {
+    # Ensure httpgd/browser device is running
+    if (use_browser_viewer) {
+      if (is.null(browser_plot_device) || browser_plot_device <= 1L) {
+        tryCatch({
+          httpgd::hgd()
+          browser_plot_device <<- grDevices::dev.cur()
+        }, error = function(e) {
+          warning("Could not start httpgd for browser plotting: ", conditionMessage(e))
+          browser_plot_device <<- NULL
+        })
+      }
+    }
 
-# ICS text values escape certain characters with a backslash (comma, semicolon,
-# backslash and newline).  When we pull SUMMARY/DESCRIPTION from an event we
-# should unescape so that a calendar entry such as
-#   SUMMARY:Sensor\=LivingRoom, Flags\=quiet
-# yields the literal `Sensor=LivingRoom, Flags=quiet` instead of including
-# stray backslashes.  This also prevents the later parser from truncating at
-# an escaped comma.
-unescape_ics <- function(val) {
-  if (is.na(val)) return(val)
-  out <- val
-  out <- str_replace_all(out, "\\\\n", "\n")
-  out <- str_replace_all(out, "\\\\N", "\n")
-  out <- str_replace_all(out, "\\\\,", ",")
-  out <- str_replace_all(out, "\\\\;", ";")
-  out <- str_replace_all(out, "\\\\\\\\", "\\")
-  out
-}
+    # Draw to browser first
+    if (!is.null(browser_plot_device) && browser_plot_device > 1L) {
+      tryCatch({
+        grDevices::dev.set(browser_plot_device)
+        draw_plot()
+      }, error = function(e) {
+        warning("Failed to draw on browser httpgd device: ", conditionMessage(e))
+      })
+    } else if (use_browser_viewer) {
+      warning("Browser device not available; skipping browser render.")
+    }
 
-parse_sensor_flags <- function(text_value) {
-  # text_value can come from either SUMMARY or DESCRIPTION (or both) of
-  # an ics event.  We look for a `sensor=` assignment and an optional
-  # `flag`/`flags=` or `tag`/`tags=` assignment.  Flags/Tags may be declared
-  # before or after the sensor assignment (separated by a semicolon or comma)
-  # and multiple values can be provided as a comma‑separated list. Examples:
-  #   parse_sensor_flags("Sensor=foo; Flags=bar")
-  #   parse_sensor_flags("sensor=foo; tags=a,b,c")
-  #   parse_sensor_flags("Tags=quiet,urlaub; sensor=LivingRoom")
-  text_value <- text_value %||% ""
+    # Ensure standard device exists and draw to it
+    if (is.null(standard_plot_device) || standard_plot_device <= 1L) {
+      standard_plot_device <<- tryCatch({
+        if (.Platform$OS.type == "windows") grDevices::windows() else if (capabilities("X11")) grDevices::X11() else grDevices::dev.new()
+        grDevices::dev.cur()
+      }, error = function(e) {
+        warning("Could not open a standard graphics device: ", conditionMessage(e)); NULL
+      })
+    }
 
-  # there may be more than one flags/tags declaration (e.g. summary and
-  # description both include them) so use match_all and combine results.
-  flags_raw_vec <- str_match_all(text_value,
-                                 regex("(?:flags?|tags?)\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))[[1]][,2]
-  # to prevent sensor names that contain commas from being truncated we
-  # strip any flag/tag assignments from the text before looking for `sensor=`.
-  text_no_flags <- str_replace_all(text_value,
-                                   regex("(?:flags?|tags?)\\s*=\\s*[^;\\n]+", ignore_case = TRUE), "")
+    if (!is.null(standard_plot_device) && standard_plot_device > 1L) {
+      tryCatch({
+        grDevices::dev.set(standard_plot_device)
+        draw_plot()
+      }, error = function(e) {
+        warning("Failed to draw on standard graphics device: ", conditionMessage(e))
+      })
+    } else {
+      warning("Standard graphics device not available; skipping R render.")
+    }
 
-  # now capture sensor; allow commas in the value but stop at semicolon or
-  # newline (multi-day events may add trailing semicolons during combine).
-  sensor_match <- str_match(text_no_flags, regex("sensor\\s*=\\s*([^;\\n]+)", ignore_case = TRUE))
+    return(invisible(NULL))
+  }
 
+  # Default single-target rendering (rstudio or browser)
+  draw_plot()
+  invisible(NULL)
   sensor_raw <- str_trim(sensor_match[, 2] %||% NA_character_)
   sensor_name <- sensor_raw
   if (!is.na(sensor_name) && str_detect(sensor_name, "/")) {
@@ -1588,7 +1675,7 @@ for(i in seq_along(metric_list)) {
     theme_minimal(base_size = 12) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
           plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
-  if(!dry_run) print(p)
+  render_plot(function() print(p))
 }
 
 
@@ -1609,7 +1696,7 @@ for(env_name in names(env_analysis_vars)) {
       p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
         annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
     }
-    if(!dry_run) print(p)
+    render_plot(function() print(p))
   }
 }
 
@@ -1635,9 +1722,11 @@ for(m in names(bio_vars)) {
     matrix_plots[[length(matrix_plots) + 1]] <- p_mat
   }
 }
-grid.arrange(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp=gpar(fontsize=12, font=2)))
+render_plot(function() {
+  grid.arrange(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp=gpar(fontsize=12, font=2)))
+})
 
-if (plot_output_mode == "browser" && !is.null(browser_viewer_url)) {
+if (use_browser_viewer && !is.null(browser_viewer_url)) {
   cat("\nBrowser viewer URL:\n")
   cat(sprintf("%s\n", browser_viewer_url))
 }
