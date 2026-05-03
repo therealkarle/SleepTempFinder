@@ -69,6 +69,7 @@ if (!is.null(script_path)) {
 } else {
   warning("could not determine SleepTempFinder.R location; working directory unchanged")
 }
+script_directory <- if (!is.null(script_path)) dirname(script_path) else normalizePath(getwd(), mustWork = FALSE)
 
 # load configuration (primary + optional private override)
 config <- read_yaml("config.yaml")
@@ -118,6 +119,52 @@ if (is.null(plot_cfg)) plot_cfg <- list()
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
+plot_export_cfg <- plot_cfg$export
+if (is.null(plot_export_cfg)) plot_export_cfg <- list()
+plot_export_enabled <- if (is.null(plot_export_cfg$enabled)) TRUE else isTRUE(plot_export_cfg$enabled)
+plot_export_dir_cfg <- plot_export_cfg$output_dir
+if (is.null(plot_export_dir_cfg) || !nzchar(plot_export_dir_cfg)) plot_export_dir_cfg <- "../PlotOutput"
+
+is_absolute_path <- function(path_value) {
+  grepl("^(?:[A-Za-z]:[\\\\/]|/)", path_value, perl = TRUE)
+}
+
+resolve_plot_output_dir <- function(path_value) {
+  if (is.null(path_value) || !nzchar(path_value)) {
+    path_value <- "../PlotOutput"
+  }
+  if (is_absolute_path(path_value)) {
+    return(normalizePath(path_value, winslash = "/", mustWork = FALSE))
+  }
+  normalizePath(file.path(script_directory, path_value), winslash = "/", mustWork = FALSE)
+}
+
+plot_output_dir <- resolve_plot_output_dir(plot_export_dir_cfg)
+
+slugify_plot_name <- function(...) {
+  parts <- vapply(list(...), function(value) as.character(value)[1], character(1))
+  plot_name <- paste(parts[nzchar(parts)], collapse = "_")
+  plot_name <- iconv(plot_name, to = "ASCII//TRANSLIT")
+  if (is.na(plot_name) || !nzchar(plot_name)) plot_name <- "plot"
+  plot_name <- gsub("[^A-Za-z0-9]+", "_", plot_name)
+  plot_name <- gsub("_+", "_", plot_name)
+  plot_name <- gsub("^_|_$", "", plot_name)
+  tolower(plot_name)
+}
+
+save_plot_image <- function(plot_object, file_stub, width = 10, height = 6, dpi = 300) {
+  if (dry_run || !plot_export_enabled) return(invisible(NULL))
+  dir.create(plot_output_dir, recursive = TRUE, showWarnings = FALSE)
+  file_path <- file.path(plot_output_dir, paste0(file_stub, ".png"))
+  tryCatch({
+    ggplot2::ggsave(filename = file_path, plot = plot_object, width = width, height = height, dpi = dpi, bg = "white")
+    invisible(file_path)
+  }, error = function(e) {
+    warning("Failed to save plot '", file_stub, "': ", conditionMessage(e), call. = FALSE)
+    invisible(NULL)
+  })
+}
+
 auto_open_browser_viewer <- FALSE
 # Plot output mode:
 # - "rstudio": use the normal graphics device and show plots in RStudio
@@ -142,11 +189,11 @@ auto_open_browser_viewer <- FALSE
 if (!is.null(plot_cfg$auto_open_browser_viewer)) {
   auto_open_browser_viewer <- isTRUE(plot_cfg$auto_open_browser_viewer)
 }
-  if ("browser" %in% run_modes) {
-    if (!requireNamespace("httpgd", quietly = TRUE)) {
-      install.packages("httpgd")
-    }
+if ("browser" %in% run_modes) {
+  if (!requireNamespace("httpgd", quietly = TRUE)) {
+    install.packages("httpgd")
   }
+}
 
 # placeholder for browser viewer URL (populated when httpgd is started)
 browser_viewer_url <- NULL
@@ -1440,6 +1487,7 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
       theme_minimal(base_size = 12) +
       theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
             plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
+    save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
     if(!dry_run) tryCatch(print(p), error = function(e) warning("Plot failed: ", conditionMessage(e), "\n"))
   }
 }
@@ -1460,6 +1508,7 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
         p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
           annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
       }
+      save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
       if(!dry_run) print(p)
     }
   }
@@ -1486,7 +1535,12 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       matrix_plots[[length(matrix_plots) + 1]] <- p_mat
     }
   }
-  if(!dry_run) grid.arrange(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp=gpar(fontsize=12, font=2)))
+  matrix_dashboard <- gridExtra::arrangeGrob(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2)))
+  save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 12, height = 9)
+  if(!dry_run) {
+    grid::grid.newpage()
+    grid::grid.draw(matrix_dashboard)
+  }
 }
 
 dashboard_df <- final_data_viz %>%

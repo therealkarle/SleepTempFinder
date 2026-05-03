@@ -33,3 +33,7 @@ RScript/config.private.yaml
 #venv
 .venv*
 .positai
+
+
+#Outputs
+PlotOutput/

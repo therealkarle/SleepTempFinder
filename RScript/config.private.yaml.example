@@ -41,3 +41,6 @@ calendar_source:
 # plot:
 #   output_mode: "browser"  # or "rstudio"
 #   auto_open_browser_viewer: true
+#   export:
+#     enabled: true
+#     output_dir: "../PlotOutput"  # relative to RScript/, or use an absolute path

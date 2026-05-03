@@ -212,10 +212,16 @@ plot:
   #         again to an httpgd browser viewer. This runs the same plotting
   #         logic twice (RStudio then browser) without opening additional
   #         RStudio graphic devices.
-  output_mode: "both"
+  output_mode: "rstudio"
   # When true and output_mode is browser, open the viewer URL in the system
   # browser as soon as the httpgd server is ready.
   auto_open_browser_viewer: true
+  # Save generated plots directly to image files.
+  # Set enabled to false to keep plots only in the active graphics device.
+  # output_dir may be relative (resolved from RScript/) or absolute.
+  export:
+    enabled: true
+    output_dir: "../PlotOutput"
   metric_colors:
     room_temp: "#ff7f0e"    # orange
     rel_hum: "#1f77b4"      # blue
