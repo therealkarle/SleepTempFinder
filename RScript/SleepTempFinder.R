@@ -1479,16 +1479,20 @@ metric_colors <- unname(sapply(metric_list, function(m) {
 plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, dry_run) {
   for(i in seq_along(metric_list)) {
     m <- metric_list[i]
-    p <- ggplot(data_viz, aes(x = Date, y = .data[[m]])) +
-      geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
-      geom_point(color = metric_colors[i], size = 2, na.rm = TRUE) +
-      scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
-      labs(title = metric_labels[i], x = NULL, y = NULL) +
-      theme_minimal(base_size = 12) +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
-            plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
-    save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
-    if(!dry_run) tryCatch(print(p), error = function(e) warning("Plot failed: ", conditionMessage(e), "\n"))
+    tryCatch({
+      p <- ggplot(data_viz, aes(x = Date, y = .data[[m]])) +
+        geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
+        geom_point(color = metric_colors[i], size = 2, na.rm = TRUE) +
+        scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
+        labs(title = metric_labels[i], x = NULL, y = NULL) +
+        theme_minimal(base_size = 12) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
+              plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
+      save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
+      if(!dry_run) print(p)
+    }, error = function(e) {
+      warning(sprintf("Failed to create timeline plot for %s: %s\n", m, conditionMessage(e)))
+    })
   }
 }
 
@@ -1499,17 +1503,21 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
     e_unit <- env_analysis_vars[[env_name]]$unit
     for(m in bio_vars) {
       opt <- optima_storage[[paste0(env_name, "_", m)]]
-      p <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
-        geom_point(alpha = 0.5, color = "darkgrey") +
-        geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
-        labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
-        theme_minimal()
-      if(!is.null(opt)) {
-        p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
-          annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
-      }
-      save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
-      if(!dry_run) print(p)
+      tryCatch({
+        p <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
+          geom_point(alpha = 0.5, color = "darkgrey") +
+          geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
+          labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
+          theme_minimal()
+        if(!is.null(opt)) {
+          p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
+            annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
+        }
+        save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
+        if(!dry_run) print(p)
+      }, error = function(e) {
+        warning(sprintf("Failed to create scatter plot for %s vs %s: %s\n", m, env_name, conditionMessage(e)))
+      })
     }
   }
 
@@ -1522,24 +1530,47 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       e_unit <- env_analysis_vars[[env_name]]$unit
       opt <- optima_storage[[paste0(env_name, "_", m)]]
 
-      p_mat <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
-        geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
-        theme_minimal(base_size = 8) + 
-        labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
-        theme(plot.title = element_text(size = 7, face = "bold"))
+      tryCatch({
+        p_mat <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
+          geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
+          theme_minimal(base_size = 8) + 
+          labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
+          theme(plot.title = element_text(size = 7, face = "bold"))
 
-      if(!is.null(opt)) {
-        p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
-      }
+        if(!is.null(opt)) {
+          p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
+        }
 
-      matrix_plots[[length(matrix_plots) + 1]] <- p_mat
+        # Only add if plot object is valid
+        if(!is.null(p_mat) && inherits(p_mat, "ggplot")) {
+          matrix_plots[[length(matrix_plots) + 1]] <- p_mat
+        }
+      }, error = function(e) {
+        warning(sprintf("Failed to create matrix plot for %s x %s: %s\n", m, env_name, conditionMessage(e)))
+      })
     }
   }
-  matrix_dashboard <- gridExtra::arrangeGrob(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2)))
-  save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 12, height = 9)
-  if(!dry_run) {
-    grid::grid.newpage()
-    grid::grid.draw(matrix_dashboard)
+  
+  # Only render matrix dashboard if we have valid plots
+  if(length(matrix_plots) > 0) {
+    tryCatch({
+      matrix_dashboard <- gridExtra::arrangeGrob(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2)))
+      save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 12, height = 9)
+      if(!dry_run) {
+        tryCatch({
+          grid::grid.newpage()
+          grid::grid.draw(matrix_dashboard)
+        }, error = function(e) {
+          warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
+          # Attempt to save without rendering
+          cat("Matrix dashboard saved to file but could not be rendered on screen.\n")
+        })
+      }
+    }, error = function(e) {
+      warning(sprintf("Failed to arrange matrix plots: %s\n", conditionMessage(e)))
+    })
+  } else {
+    warning("No valid matrix plots were created; skipping matrix dashboard.\n")
   }
 }
 
