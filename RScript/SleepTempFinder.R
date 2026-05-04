@@ -1051,41 +1051,45 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
       cat("[apply_analysis_subset_filter] Processing", length(flag_exprs), "flag expressions\n")
       
       for (expr in flag_exprs) {
-        # Convert flag comparison expression to FlagsExpr format
-        expr_clean <- trimws(expr)
-        expr_clean <- gsub(" ", "", expr_clean, fixed = TRUE)
+        expr <- trimws(expr)
         
+        # Use better regex patterns with space handling
         converted_expr <- NULL
         
-        # Pattern: flags != 'value'
-        if (grepl("^flags!=", expr_clean, perl = TRUE)) {
-          value <- sub("^flags!='(.*)'$", "\\1", expr_clean, perl = TRUE)
-          if (value == expr_clean) {
-            value <- sub('^flags!="(.*)"$', "\\1", expr_clean, perl = TRUE)
-          }
-          if (value != expr_clean) {
-            converted_expr <- paste0("!", value)
-          }
-        }
-        # Pattern: flags == 'value'
-        else if (grepl("^flags==", expr_clean, perl = TRUE)) {
-          value <- sub("^flags=='(.*)'$", "\\1", expr_clean, perl = TRUE)
-          if (value == expr_clean) {
-            value <- sub('^flags=="(.*)"$', "\\1", expr_clean, perl = TRUE)
-          }
-          if (value != expr_clean) {
-            converted_expr <- value
+        # Pattern 1: flags != 'value'
+        if (grepl("flags\\s*!=\\s*", expr, perl = TRUE)) {
+          m <- regexec("flags\\s*!=\\s*['\"]([^'\"]+)['\"]", expr, perl = TRUE)
+          if (m[[1]][1] > 0) {
+            value <- regmatches(expr, m)[[1]][2]
+            if (!is.na(value)) {
+              converted_expr <- paste0("!", value)
+            }
           }
         }
-        # Pattern: flags %in% c(...)
-        else if (grepl("^flags%in%c\\(", expr_clean, perl = TRUE)) {
-          values_str <- sub("^flags%in%c\\((.*)\\)$", "\\1", expr_clean, perl = TRUE)
-          values <- unlist(strsplit(values_str, ",", fixed = TRUE))
-          values <- gsub("^'|'$", "", trimws(values))
-          values <- gsub('^"|"$', "", values)
-          values <- values[nzchar(values)]
-          if (length(values) > 0) {
-            converted_expr <- paste(values, collapse = ",")
+        # Pattern 2: flags == 'value'
+        else if (grepl("flags\\s*==\\s*", expr, perl = TRUE)) {
+          m <- regexec("flags\\s*==\\s*['\"]([^'\"]+)['\"]", expr, perl = TRUE)
+          if (m[[1]][1] > 0) {
+            value <- regmatches(expr, m)[[1]][2]
+            if (!is.na(value)) {
+              converted_expr <- value
+            }
+          }
+        }
+        # Pattern 3: flags %in% c(...)
+        else if (grepl("flags\\s*%in%\\s*c\\(", expr, perl = TRUE)) {
+          m <- regexec("flags\\s*%in%\\s*c\\((.+?)\\)", expr, perl = TRUE)
+          if (m[[1]][1] > 0) {
+            values_str <- regmatches(expr, m)[[1]][2]
+            if (!is.na(values_str)) {
+              values <- unlist(strsplit(values_str, ",", fixed = TRUE))
+              values <- trimws(values)
+              values <- gsub("^['\"]|['\"]$", "", values)
+              values <- values[nzchar(values)]
+              if (length(values) > 0) {
+                converted_expr <- paste(values, collapse = ",")
+              }
+            }
           }
         }
         

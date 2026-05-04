@@ -140,20 +140,20 @@ parse_flag_expression <- function(expr) {
   }
   
   tokens <- tokenize_flag_expression(expr)
-  parser <- list(tokens = tokens, pos = 1)
+  parser <- new.env(parent = emptyenv())
+  parser$tokens <- tokens
+  parser$pos <- 1
   
   # Start parsing from lowest precedence (OR)
   ast <- parse_or_expr(parser)
   
   # Verify we consumed all tokens
-  if (parser$pos <= length(parser$tokens)) {
-    current <- parser$tokens[[parser$pos]]
-    if (current$type != TOKEN_EOF) {
-      stop(sprintf(
-        "Unexpected token '%s' at position %d",
-        current$value, current$pos
-      ))
-    }
+  current <- current_token(parser)
+  if (current$type != TOKEN_EOF) {
+    stop(sprintf(
+      "Unexpected token '%s' at position %d",
+      current$value, current$pos
+    ))
   }
   
   return(ast)
@@ -195,7 +195,7 @@ parse_or_expr <- function(parser) {
   left <- parse_and_expr(parser)
   
   while (current_token(parser)$type == TOKEN_OR) {
-    parser <- advance_token(parser)
+    advance_token(parser)
     right <- parse_and_expr(parser)
     left <- list(type = "or", left = left, right = right)
   }
@@ -210,7 +210,7 @@ parse_and_expr <- function(parser) {
   left <- parse_xor_expr(parser)
   
   while (current_token(parser)$type == TOKEN_AND) {
-    parser <- advance_token(parser)
+    advance_token(parser)
     right <- parse_xor_expr(parser)
     left <- list(type = "and", left = left, right = right)
   }
@@ -225,7 +225,7 @@ parse_xor_expr <- function(parser) {
   left <- parse_not_expr(parser)
   
   while (current_token(parser)$type == TOKEN_XOR) {
-    parser <- advance_token(parser)
+    advance_token(parser)
     right <- parse_not_expr(parser)
     left <- list(type = "xor", left = left, right = right)
   }
@@ -238,7 +238,7 @@ parse_xor_expr <- function(parser) {
 #' @keywords internal
 parse_not_expr <- function(parser) {
   if (current_token(parser)$type == TOKEN_NOT) {
-    parser <- advance_token(parser)
+    advance_token(parser)
     arg <- parse_not_expr(parser)  # Right-associative: ! ! A
     return(list(type = "not", arg = arg))
   }
@@ -253,14 +253,14 @@ parse_primary <- function(parser) {
   token <- current_token(parser)
   
   if (token$type == TOKEN_FLAG) {
-    parser <- advance_token(parser)
+    advance_token(parser)
     return(list(type = "flag", name = token$value))
   }
   
   if (token$type == TOKEN_LPAREN) {
-    parser <- advance_token(parser)
+    advance_token(parser)
     ast <- parse_or_expr(parser)
-    parser <- expect_token(parser, TOKEN_RPAREN)
+    expect_token(parser, TOKEN_RPAREN)
     return(ast)
   }
   

@@ -80,55 +80,59 @@ cat("Command Syntax: run_analysis(date=NULL, flags=NULL, sensors=NULL, dry_run=F
 #   !(flags %in% c('A'))      →  !A
 convert_flag_comparison <- function(expr_str) {
   expr_str <- trimws(expr_str)
-  expr_str <- gsub(" ", "", expr_str, fixed = TRUE)  # Remove ALL whitespace
   
-  # Pattern: !(flags op value)
-  if (grepl("^!\\(flags", expr_str, perl = TRUE)) {
-    # !(flags == 'X')  →  !X
-    # !(flags %in% c(...))  →  !(A, B)
-    inner <- sub("^!\\(flags(.*)\\)$", "\\1", expr_str, perl = TRUE)
-    inner_result <- convert_flag_comparison(paste0("flags", inner))
-    if (!is.null(inner_result)) {
-      return(paste0("!(", inner_result, ")"))
+  # Pattern 1: flags != 'value' or flags != "value"
+  if (grepl("flags\\s*!=\\s*", expr_str, perl = TRUE)) {
+    m <- regexec("flags\\s*!=\\s*['\"]([^'\"]+)['\"]", expr_str, perl = TRUE)
+    if (m[[1]][1] > 0) {
+      value <- regmatches(expr_str, m)[[1]][2]
+      if (!is.na(value)) {
+        return(paste0("!", value))
+      }
     }
   }
   
-  # Pattern: flags != 'value' (with or without quotes)
-  if (grepl("^flags!=", expr_str, perl = TRUE)) {
-    value <- sub("^flags!='(.*)'$", "\\1", expr_str, perl = TRUE)
-    if (value == expr_str) {
-      value <- sub('^flags!="(.*)"$', "\\1", expr_str, perl = TRUE)
-    }
-    if (value != expr_str) {
-      return(paste0("!", value))
-    }
-  }
-  
-  # Pattern: flags == 'value' (with or without quotes)
-  if (grepl("^flags==", expr_str, perl = TRUE)) {
-    value <- sub("^flags=='(.*)'$", "\\1", expr_str, perl = TRUE)
-    if (value == expr_str) {
-      value <- sub('^flags=="(.*)"$', "\\1", expr_str, perl = TRUE)
-    }
-    if (value != expr_str) {
-      return(value)
+  # Pattern 2: flags == 'value' or flags == "value"
+  if (grepl("flags\\s*==\\s*", expr_str, perl = TRUE)) {
+    m <- regexec("flags\\s*==\\s*['\"]([^'\"]+)['\"]", expr_str, perl = TRUE)
+    if (m[[1]][1] > 0) {
+      value <- regmatches(expr_str, m)[[1]][2]
+      if (!is.na(value)) {
+        return(value)
+      }
     }
   }
   
-  # Pattern: flags %in% c('A', 'B', ...) or flags %in% c("A", "B", ...)
-  if (grepl("^flags%in%c\\(", expr_str, perl = TRUE)) {
-    values_str <- sub("^flags%in%c\\((.*)\\)$", "\\1", expr_str, perl = TRUE)
-    # Split by comma and clean quotes
-    values <- unlist(strsplit(values_str, ",", fixed = TRUE))
-    values <- gsub("^'|'$", "", trimws(values))
-    values <- gsub('^"|"$', "", values)
-    values <- values[nzchar(values)]
-    if (length(values) > 0) {
-      return(paste(values, collapse = ","))
+  # Pattern 3: flags %in% c('A', 'B', ...)
+  if (grepl("flags\\s*%in%\\s*c\\(", expr_str, perl = TRUE)) {
+    m <- regexec("flags\\s*%in%\\s*c\\((.+?)\\)", expr_str, perl = TRUE)
+    if (m[[1]][1] > 0) {
+      values_str <- regmatches(expr_str, m)[[1]][2]
+      if (!is.na(values_str)) {
+        # Split by comma and clean quotes
+        values <- unlist(strsplit(values_str, ",", fixed = TRUE))
+        values <- trimws(values)
+        values <- gsub("^['\"]|['\"]$", "", values)
+        values <- values[nzchar(values)]
+        if (length(values) > 0) {
+          return(paste(values, collapse = ","))
+        }
+      }
     }
   }
   
-  # If no pattern matched, return original
+  # Pattern 4: !(flags ...) - negated pattern
+  if (grepl("^!\\s*\\(", expr_str, perl = TRUE)) {
+    inner <- sub("^!\\s*\\((.+)\\)\\s*$", "\\1", expr_str, perl = TRUE)
+    if (inner != expr_str) {
+      inner_result <- convert_flag_comparison(inner)
+      if (!is.null(inner_result)) {
+        return(paste0("!(", inner_result, ")"))
+      }
+    }
+  }
+  
+  # If no pattern matched, return NULL
   return(NULL)
 }
 
