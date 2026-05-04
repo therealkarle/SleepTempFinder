@@ -255,7 +255,7 @@ outlier_filter:
         min: 0.05
         max: 0.95
       Sleep_Score:
-        sym: 0.95
+        sym: 0.96
         min: 0.05
         max: 0.95
       HRV:

@@ -1750,8 +1750,11 @@ temp_mapped <- sleep_complete %>%
     }),
     # restrict to the selected sensor if one is assigned
     Avg_Temp = mean(sensor_raw$room_temp[unlist(.idx_used)], na.rm = TRUE),
+    Temp_SD = sd(sensor_raw$room_temp[unlist(.idx_used)], na.rm = TRUE),
     Avg_Rel_Hum = mean(sensor_raw$rel_hum[unlist(.idx_used)], na.rm = TRUE),
+    Rel_Hum_SD = sd(sensor_raw$rel_hum[unlist(.idx_used)], na.rm = TRUE),
     Avg_Abs_Hum = mean(sensor_raw$abs_hum[unlist(.idx_used)], na.rm = TRUE),
+    Abs_Hum_SD = sd(sensor_raw$abs_hum[unlist(.idx_used)], na.rm = TRUE),
     Raw_N_Readings = length(unlist(.idx_used)),
     Sensor_Files = list(unique(sensor_raw$Source_File[unlist(.idx_used)])),
     Sensor_Names = list(unique(sensor_raw$Source_Name[unlist(.idx_used)]))
@@ -1950,7 +1953,7 @@ if (n_after_analysis_filter > 0) {
       format_val(q_bounds[[2]]))
     out
   }
-  stat_cols <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
+  stat_cols <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
   stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
   cat("\nStatistics for used nights:\n\n")
   print(stats_df)
@@ -1963,7 +1966,7 @@ if (n_after_analysis_filter > 0) {
 # Define biomarker variables (sleep quality indicators)
 bio_vars <- c("Sleep_Score", "HRV", "RHR")
 
-metric_list <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
+metric_list <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR")
 # derive labels/colors from configuration, with fallbacks
 metric_labels <- unname(sapply(metric_list, function(m) {
   plot_cfg$metric_labels[[m]] %||% m
@@ -2088,16 +2091,21 @@ dashboard_df <- final_data_viz %>%
     Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
   ) %>%
   mutate(Sleep_Duration = format_hours_minutes(Sleep_Duration)) %>%
-  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR, Sleep_Duration, Outlier_Reason) %>%
+  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Temp_SD, Avg_Rel_Hum, Rel_Hum_SD, Avg_Abs_Hum, Abs_Hum_SD, Sleep_Score, HRV, RHR, Sleep_Duration, Outlier_Reason) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
 
 
 
 # --- 5. IMPACT ANALYSIS & OPTIMA ---
-env_analysis_vars <- list("Room Temp" = list(col="Avg_Temp", unit="°C"), 
-                          "Rel Humidity" = list(col="Avg_Rel_Hum", unit="%"),
-                          "Abs Humidity" = list(col="Avg_Abs_Hum", unit="g/m³"))
+env_analysis_vars <- list(
+  "Room Temp" = list(col="Avg_Temp", unit="°C"), 
+  "Room Temp Variability" = list(col="Temp_SD", unit="°C"),
+  "Rel Humidity" = list(col="Avg_Rel_Hum", unit="%"),
+  "Rel Humidity Variability" = list(col="Rel_Hum_SD", unit="%"),
+  "Abs Humidity" = list(col="Avg_Abs_Hum", unit="g/m³"),
+  "Abs Humidity Variability" = list(col="Abs_Hum_SD", unit="g/m³")
+)
 optima_storage <- list()
 
 cat("\n                     SLEEP ANALYSIS\n")
@@ -2143,7 +2151,7 @@ cat("===========================================================\n")
 
 
 # --- 6. INDIVIDUAL TIMELINE PLOTS ---
-metric_list <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
+metric_list <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR")
 # derive labels/colors from configuration, with fallbacks
 metric_labels <- unname(sapply(metric_list, function(m) {
   plot_cfg$metric_labels[[m]] %||% m
