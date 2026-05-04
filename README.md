@@ -68,20 +68,20 @@ Rscript RScript/SleepTempFinder.R --dry-run
 Die Filter werden als semikolon-getrennte Zeichenkette angegeben.
 
 Mögliche Bestandteile:
-- Datumsauswahl: `YYYY`, `qN.YYYY`, `MM.YYYY`, `DD.MM.YYYY`, `DD.MM.YYYY,DD.MM.YYYY`
+- Datumsauswahl: `YYYY`, `qN.YYYY`, `MM.YYYY`, `YYYY.MM`, `DD.MM.YYYY`, `DD.MM.YYYY,DD.MM.YYYY`
 - Sensoren: `Sensors=Name` (mehrere Sensoren mit `,` oder `|`)
-- Flags: `Flags=Tag1|Tag2` (OR) oder `Flags=Tag1,Tag2` (AND)
-- Komplexe Flag-Ausdrücke: `FlagsExpr=` mit `!`, `,`, `&`, `*`, Klammern
+- Tags: `Tags=Tag1|Tag2` (OR) oder `Tags=Tag1,Tag2` (AND)
+- Komplexe Tag-Ausdrücke: `TagsExpr=` mit `!`, `,`, `&`, `*`, Klammern
 - Numerische Ausdrücke: z.B. `temp>18`, `SleepScore>80`, `18<temp<22`
 
 Beispiele:
 
 ```sh
-Rscript RScript/SleepTempFinder.R --filter="q1.2026;Flags=Hochlitten"
+Rscript RScript/SleepTempFinder.R --filter="q1.2026;Tags=Hochlitten"
 Rscript RScript/SleepTempFinder.R --filter="01.2026;Sensors=WohnwagenSensor"
 Rscript RScript/SleepTempFinder.R --filter="temp>18"
 Rscript RScript/SleepTempFinder.R --filter="SleepScore>80"
-Rscript RScript/SleepTempFinder.R --filter="FlagsExpr=(Urlaub, Wohnmobil) & !Hochlitten"
+Rscript RScript/SleepTempFinder.R --filter="TagsExpr=(Urlaub, Wohnmobil) & !Hochlitten"
 ```
 
 ## Interaktive Nutzung in RStudio
@@ -99,27 +99,27 @@ source("RScript/studio_commands.R")
 
 ```r
 run_analysis("2026")
-run_analysis(flags = "Hochlitten")
+run_analysis(tags = "Hochlitten")
 run_analysis(sensors = "WohnwagenSensor")
 run_analysis(filter = "temp>18")
 run_analysis(filter = "SleepScore>80")
-run_analysis(flags = "(Urlaub, Wohnmobil) & !Hochlitten")
-run_analysis(flags != 'Hochlitten')
+run_analysis(tags = "(Urlaub, Wohnmobil) & !Hochlitten")
+run_analysis(tags != 'Hochlitten')
 ```
 
 ### `run_analysis()`-Argumente
 
 - `date` – optionaler Datumsfilter oder Datumsbereich (z. B. `"2026"`, `"01.2026"`, `"02.02.2026,04.03.2026"`)
-- `flags` – Filter auf Kalenderflags oder Tags
+- `tags` – Filter auf Kalendertags
 - `sensors` – Filter auf Sensoren
 - `dry_run` – `TRUE` unterdrückt Plot-Ausgabe
 - `filter` – roher Filterstring im selben Format wie `--filter`
 
 Wenn `filter` gesetzt ist, hat es Vorrang vor den anderen Parametern.
 
-## Komplexe Flag-Filter
+## Komplexe Tag-Filter
 
-Die neue Logik unterstützt komplexe boolesche Ausdrücke für Flags.
+Die neue Logik unterstützt komplexe boolesche Ausdrücke für Tags.
 
 Operatoren:
 - `,` → OR
@@ -131,18 +131,18 @@ Operatoren:
 Beispiele:
 
 ```r
-run_analysis(flags = "Urlaub, Wohnmobil")
-run_analysis(flags = "Urlaub & !Hochlitten")
-run_analysis(flags = "(Hochlitten, Trainingslager) & !Urlaub")
-run_analysis(flags = "Urlaub * Wohnmobil")
+run_analysis(tags = "Urlaub, Wohnmobil")
+run_analysis(tags = "Urlaub & !Hochlitten")
+run_analysis(tags = "(Hochlitten, Trainingslager) & !Urlaub")
+run_analysis(tags = "Urlaub * Wohnmobil")
 ```
 
-Du kannst auch normale R-Vergleiche verwenden; sie werden automatisch in `FlagsExpr=` konvertiert:
+Du kannst auch normale R-Vergleiche verwenden; sie werden automatisch in `TagsExpr=` konvertiert:
 
 ```r
-run_analysis(flags != 'Hochlitten')
-run_analysis(flags == 'Urlaub')
-run_analysis(flags %in% c('Urlaub','Wohnmobil'))
+run_analysis(tags != 'Hochlitten')
+run_analysis(tags == 'Urlaub')
+run_analysis(tags %in% c('Urlaub','Wohnmobil'))
 ```
 
 ## Sensor- und Kalenderdaten
@@ -153,10 +153,10 @@ Sensoren werden in `RScript/config.yaml` über `sensor_files` definiert. Jeder E
 - `col_time`, `col_temp`, `col_hum` – Spaltennamen im Sensor-CSV
 - `default: true` – optionaler Standard-Sensor
 
-Kalenderereignisse können Sensor und Flags im `SUMMARY`/`DESCRIPTION` enthalten, z. B.:
+Kalenderereignisse können Sensor und tags im `SUMMARY`/`DESCRIPTION` enthalten, z. B.:
 
 ```text
-sensor=Wohnwagen; flags=Hochlitten
+sensor=Wohnwagen; tags=Hochlitten
 ```
 
 Wenn kein Sensor angegeben ist, wird `calendar_default_sensor` bzw. der standardmäßige Sensor verwendet.
@@ -178,7 +178,7 @@ Das Skript erzeugt:
 ## Tipps
 
 - Wenn du nur bestimmte Sensoren sehen willst, kannst du `Sensors=<Name>` im Filter verwenden.
-- Für komplexe Flag-Logik benutze `FlagsExpr=` oder `run_analysis(flags=...)` mit `!`, `&`, `,`, `*`.
+- Für komplexe Tag-Logik benutze `TagsExpr=` oder `run_analysis(tags=...)` mit `!`, `&`, `,`, `*`.
 - Wenn du die Konfiguration lokal ändern willst, erstelle `RScript/config.private.yaml`.
 
 ## Beispiel-Sensoren im aktuellen Setup

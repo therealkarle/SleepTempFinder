@@ -1,5 +1,5 @@
-# Flag Expression Parser
-# Parses boolean flag expressions with support for:
+# Tag Expression Parser
+# Parses boolean tag expressions with support for:
 #   - OR (,)
 #   - AND (&)
 #   - XOR (*)
@@ -121,7 +121,7 @@ tokenize_flag_expression <- function(expr) {
 # Parser: Token list -> AST
 # ============================================================================
 
-#' Parse a flag expression into an Abstract Syntax Tree (AST)
+#' Parse a tag expression into an Abstract Syntax Tree (AST)
 #'
 #' @param expr Character string like "(Urlaub, Wohnmobil) & !HomeOffice"
 #'
@@ -274,10 +274,10 @@ parse_primary <- function(parser) {
 # Evaluator: AST + flags -> boolean
 # ============================================================================
 
-#' Evaluate a flag expression AST against a set of flags
+#' Evaluate a tag expression AST against a set of tags
 #'
 #' @param ast Abstract Syntax Tree from parse_flag_expression()
-#' @param row_flags Character vector of flags present in current row
+#' @param row_flags Character vector of tags present in current row
 #'                   Example: c("Urlaub", "HomeOffice")
 #'
 #' @return Logical: TRUE if expression is satisfied, FALSE otherwise
@@ -354,12 +354,12 @@ evaluate_flag_ast <- function(ast, row_flags) {
 # Convenience function: evaluate expression string directly
 # ============================================================================
 
-#' Evaluate a flag expression string against a set of flags
+#' Evaluate a tag expression string against a set of tags
 #'
 #' Combines parsing and evaluation in one step.
 #'
 #' @param expr Character string like "(Urlaub, Wohnmobil) & !HomeOffice"
-#' @param row_flags Character vector of flags
+#' @param row_flags Character vector of tags
 #'
 #' @return Logical: TRUE if expression is satisfied
 #'

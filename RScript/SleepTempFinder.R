@@ -216,20 +216,21 @@ options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE
 # Date selectors recognize:
 #   YYYY            entire year (e.g. 2025)
 #   qN.YYYY         quarter (e.g. q1.2025)
-#   MM.YYYY         month (e.g. 01.2025)
+#   MM.YYYY or YYYY.MM  month (e.g. 01.2025 or 2025.01)
 #   DD.MM.YYYY      a single date or, with a comma, a range
 #                  (e.g. 02.02.2026,04.03.2026)
 #
-# Sensor or flag clauses look like "Sensors=Name" or "Flags=A|B".
-# Multiple values may be separated by '|' (OR) or ',' (AND for flags;
+# Sensor or tag clauses look like "Sensors=Name" or "Tags=A|B".
+# Multiple values may be separated by '|' (OR) or ',' (AND for tags;
 # sensors are treated as OR).  Sensor names are resolved against
 # configuration keys/nicknames.  The CLI filter is merged with
 # config$analysis_filter (command-line values override config).
 #
 # Examples:
 #   --filter="2025"                        # whole year 2025
-#   --filter="q1.2025;Flags=Hochlitten"    # first quarter with flag
+#   --filter="q1.2025;Tags=Hochlitten"    # first quarter with tag
 #   --filter="01.2025;Sensors=Wohnwagen"   # January with specific sensor
+#   --filter="2025.02,2025.04"             # February through April 2025
 #   --filter="02.02.2026,04.03.2026"       # explicit date range
 #   --filter="temp>18"                     # average temp over 18°C
 #   --filter="SleepScore>80"               # biomarker filter
@@ -281,14 +282,27 @@ parse_date_token <- function(tok) {
                              lubridate::days_in_month(as.Date(sprintf("%04d-%02d-01", yr, mend)))))
     return(list(start = start, end = end))
   }
-  # month e.g. 01.2025 or 1.2025
-  if (grepl("^\\d{1,2}\\.\\d{4}$", tok)) {
-    parts <- strsplit(tok, "\\.")[[1]]
-    m <- as.integer(parts[1]); yr <- as.integer(parts[2])
-    start <- as.Date(sprintf("%04d-%02d-01", yr, m))
-    end <- as.Date(sprintf("%04d-%02d-%02d", yr, m,
-                             lubridate::days_in_month(start)))
-    return(list(start = start, end = end))
+  # month e.g. 01.2025, 1.2025, 2025.01, or 2025.1
+  if (grepl("^(\\d{1,2}\\.\\d{4}|\\d{4}\\.\\d{1,2})(,\\d{1,2}\\.\\d{4}|,\\d{4}\\.\\d{1,2})?$", tok)) {
+    parts <- strsplit(tok, ",")[[1]]
+    ranges <- lapply(parts, function(part) {
+      subparts <- strsplit(part, "\\.")[[1]]
+      if (nchar(subparts[1]) == 4) {
+        yr <- as.integer(subparts[1]); m <- as.integer(subparts[2])
+      } else {
+        m <- as.integer(subparts[1]); yr <- as.integer(subparts[2])
+      }
+      start <- as.Date(sprintf("%04d-%02d-01", yr, m))
+      end <- as.Date(sprintf("%04d-%02d-%02d", yr, m,
+                               lubridate::days_in_month(start)))
+      list(start = start, end = end)
+    })
+    if (length(ranges) == 1) {
+      return(list(start = ranges[[1]]$start, end = ranges[[1]]$end))
+    }
+    if (length(ranges) == 2) {
+      return(list(start = min(ranges[[1]]$start, ranges[[2]]$start), end = max(ranges[[1]]$end, ranges[[2]]$end)))
+    }
   }
   # explicit date or range dd.mm.yyyy[,dd.mm.yyyy]
   if (grepl("^\\d{2}\\.\\d{2}\\.\\d{4}", tok)) {
@@ -310,18 +324,21 @@ split_list_token <- function(val) {
 }
 
 # parse the custom --filter argument; returns a list containing
-#   enabled (bool), sensor_include, flags_include, flags_mode, flags_ast,
+#   enabled (bool), sensor_include, tags_include, tags_mode, tags_ast,
 #   date_start, date_end (Date or NULL)
 # 
-# NEW: Supports FlagsExpr= for complex boolean expressions with &, |, !, *
-# Example: FlagsExpr=(Urlaub, Wohnmobil) & !HomeOffice
+# NEW: Supports TagsExpr= for complex boolean expressions with &, |, !, *
+# Example: TagsExpr=(Urlaub, Wohnmobil) & !HomeOffice
 parse_filter_string <- function(arg) {
   # expanded filter grammar now supports arbitrary logical expressions
   # referring to columns present in the final dataset.  Unquoted expressions
   # (e.g. "temp>18" or "SleepScore>80") are stored and later evaluated
-  # by `apply_analysis_subset_filter()` after sensor/flags filtering.
+  # by `apply_analysis_subset_filter()` after sensor/tags filtering.
   cfg <- list(enabled = TRUE,
               sensor_include = character(0),
+              tags_include = character(0),
+              tags_mode = "any",
+              tags_ast = NULL,
               flags_include = character(0),
               flags_mode = "any",
               flags_ast = NULL,
@@ -332,24 +349,30 @@ parse_filter_string <- function(arg) {
   for (tok in tokens) {
     tok <- trimws(tok)
     if (tok == "") next
-    if (grepl("^(?i)flagsexpr=", tok, perl = TRUE)) {
-      # NEW: Complex boolean expression for flags
-      body <- sub("^(?i)flagsexpr=", "", tok, perl = TRUE)
+    if (grepl("^(?i)(flagsexpr|tagsexpr)=", tok, perl = TRUE)) {
+      # NEW: Complex boolean expression for tags/flags
+      body <- sub("^(?i)(flagsexpr|tagsexpr)=", "", tok, perl = TRUE)
       tryCatch({
-        cfg$flags_ast <- parse_flag_expression(body)
+        cfg$tags_ast <- parse_flag_expression(body)
+        cfg$flags_ast <- cfg$tags_ast
       }, error = function(e) {
-        warning(sprintf("Failed to parse FlagsExpr: %s\nError: %s", body, e$message))
+        warning(sprintf("Failed to parse TagsExpr/FlagsExpr: %s\nError: %s", body, e$message))
       })
-    } else if (grepl("^(?i)flags=", tok, perl = TRUE)) {
-      body <- sub("^(?i)flags=", "", tok, perl = TRUE)
+    } else if (grepl("^(?i)(flags|tags)=", tok, perl = TRUE)) {
+      body <- sub("^(?i)(flags|tags)=", "", tok, perl = TRUE)
       if (grepl("\\|", body)) {
+        cfg$tags_mode <- "any"
         cfg$flags_mode <- "any"
-        cfg$flags_include <- split_list_token(body)
+        cfg$tags_include <- split_list_token(body)
+        cfg$flags_include <- cfg$tags_include
       } else if (grepl(",", body)) {
+        cfg$tags_mode <- "all"
         cfg$flags_mode <- "all"
-        cfg$flags_include <- split_list_token(body)
+        cfg$tags_include <- split_list_token(body)
+        cfg$flags_include <- cfg$tags_include
       } else {
-        cfg$flags_include <- trimws(body)
+        cfg$tags_include <- trimws(body)
+        cfg$flags_include <- cfg$tags_include
       }
     } else if (grepl("^(?i)sensors=", tok, perl = TRUE)) {
       body <- sub("^(?i)sensors=", "", tok, perl = TRUE)
@@ -389,9 +412,18 @@ if (!is.null(filter_arg)) {
   if (length(cli_filter$sensor_include) > 0) {
     config$analysis_filter$sensor_include <- cli_filter$sensor_include
   }
-  if (length(cli_filter$flags_include) > 0) {
-    config$analysis_filter$flags_include <- cli_filter$flags_include
-    config$analysis_filter$flags_mode <- cli_filter$flags_mode
+  if (length(cli_filter$tags_include) > 0) {
+    config$analysis_filter$tags_include <- cli_filter$tags_include
+    config$analysis_filter$tags_mode <- cli_filter$tags_mode
+  }
+  if (length(cli_filter$flags_include) > 0 && length(cli_filter$tags_include) == 0) {
+    config$analysis_filter$tags_include <- cli_filter$flags_include
+    config$analysis_filter$tags_mode <- cli_filter$flags_mode
+  }
+  if (!is.null(cli_filter$tags_ast)) {
+    config$analysis_filter$tags_ast <- cli_filter$tags_ast
+  } else if (!is.null(cli_filter$flags_ast)) {
+    config$analysis_filter$tags_ast <- cli_filter$flags_ast
   }
   if (length(cli_filter$expr) > 0) {
     # expressions override any existing config expressions
@@ -1001,30 +1033,30 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
   if (is.null(filter_cfg) || !isTRUE(filter_cfg$enabled) || nrow(df) == 0) return(df)
 
   sensor_include <- trim_vector(unlist(filter_cfg$sensor_include %||% character(0)))
-  flags_include <- trim_vector(unlist(filter_cfg$flags_include %||% character(0)))
-  flags_mode <- tolower(filter_cfg$flags_mode %||% "any")
-  if (!flags_mode %in% c("any", "all")) flags_mode <- "any"
-  flags_ast <- filter_cfg$flags_ast
+  tags_include <- trim_vector(unlist(filter_cfg$tags_include %||% filter_cfg$flags_include %||% character(0)))
+  tags_mode <- tolower(filter_cfg$tags_mode %||% filter_cfg$flags_mode %||% "any")
+  if (!tags_mode %in% c("any", "all")) tags_mode <- "any"
+  tags_ast <- filter_cfg$tags_ast %||% filter_cfg$flags_ast
 
   out <- df
   if (length(sensor_include) > 0 && "Sensor" %in% names(out)) {
     out <- out %>% filter(!is.na(Sensor), Sensor %in% sensor_include)
   }
 
-  # NEW: If flags_ast is provided (complex boolean expression), use it
-  if (!is.null(flags_ast) && "Flags" %in% names(out)) {
+  # NEW: If tags_ast is provided (complex boolean expression), use it
+  if (!is.null(tags_ast) && "Flags" %in% names(out)) {
     out <- out %>%
       mutate(.flags_vec = map(Flags, split_flags)) %>%
       filter(map_lgl(.flags_vec, function(row_flags) {
-        evaluate_flag_ast(flags_ast, row_flags)
+        evaluate_flag_ast(tags_ast, row_flags)
       })) %>%
       select(-.flags_vec)
-  } else if (length(flags_include) > 0 && "Flags" %in% names(out)) {
-    # OLD: Simple flags filter (backward compatibility)
+  } else if (length(tags_include) > 0 && "Flags" %in% names(out)) {
+    # OLD: Simple tags filter (backward compatibility)
     out <- out %>%
       mutate(.flags_vec = map(Flags, split_flags)) %>%
       filter(map_lgl(.flags_vec, function(row_flags) {
-        if (flags_mode == "all") all(flags_include %in% row_flags) else any(flags_include %in% row_flags)
+        if (tags_mode == "all") all(tags_include %in% row_flags) else any(tags_include %in% row_flags)
       })) %>%
       select(-.flags_vec)
   }
@@ -1037,9 +1069,9 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
     col_exprs <- character(0)
     
     for (expr in exprs) {
-      # Check if this looks like a flags comparison: flags op value
-      if (grepl("flags\\s*(==|!=|%in%)", expr, perl = TRUE)) {
-        cat("[apply_analysis_subset_filter] Detected flag comparison in expr:", expr, "\n")
+      # Check if this looks like a tags/flags comparison: tags or flags op value
+      if (grepl("(?:flags|tags)\\s*(==|!=|%in%)", expr, perl = TRUE)) {
+        cat("[apply_analysis_subset_filter] Detected tag comparison in expr:", expr, "\n")
         flag_exprs <- c(flag_exprs, expr)
       } else {
         col_exprs <- c(col_exprs, expr)
@@ -1056,9 +1088,9 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
         # Use better regex patterns with space handling
         converted_expr <- NULL
         
-        # Pattern 1: flags != 'value'
-        if (grepl("flags\\s*!=\\s*", expr, perl = TRUE)) {
-          m <- regexec("flags\\s*!=\\s*['\"]([^'\"]+)['\"]", expr, perl = TRUE)
+        # Pattern 1: flags != 'value' or tags != 'value'
+        if (grepl("(?:flags|tags)\\s*!=\\s*", expr, perl = TRUE)) {
+          m <- regexec("(?:flags|tags)\\s*!=\\s*['\"]([^'\"]+)['\"]", expr, perl = TRUE)
           if (m[[1]][1] > 0) {
             value <- regmatches(expr, m)[[1]][2]
             if (!is.na(value)) {
@@ -1066,9 +1098,9 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
             }
           }
         }
-        # Pattern 2: flags == 'value'
-        else if (grepl("flags\\s*==\\s*", expr, perl = TRUE)) {
-          m <- regexec("flags\\s*==\\s*['\"]([^'\"]+)['\"]", expr, perl = TRUE)
+        # Pattern 2: flags == 'value' or tags == 'value'
+        else if (grepl("(?:flags|tags)\\s*==\\s*", expr, perl = TRUE)) {
+          m <- regexec("(?:flags|tags)\\s*==\\s*['\"]([^'\"]+)['\"]", expr, perl = TRUE)
           if (m[[1]][1] > 0) {
             value <- regmatches(expr, m)[[1]][2]
             if (!is.na(value)) {
@@ -1076,9 +1108,9 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
             }
           }
         }
-        # Pattern 3: flags %in% c(...)
-        else if (grepl("flags\\s*%in%\\s*c\\(", expr, perl = TRUE)) {
-          m <- regexec("flags\\s*%in%\\s*c\\((.+?)\\)", expr, perl = TRUE)
+        # Pattern 3: flags %in% c(...) or tags %in% c(...)
+        else if (grepl("(?:flags|tags)\\s*%in%\\s*c\\(", expr, perl = TRUE)) {
+          m <- regexec("(?:flags|tags)\\s*%in%\\s*c\\((.+?)\\)", expr, perl = TRUE)
           if (m[[1]][1] > 0) {
             values_str <- regmatches(expr, m)[[1]][2]
             if (!is.na(values_str)) {

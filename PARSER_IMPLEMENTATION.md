@@ -8,7 +8,7 @@
 Vollständiger Expression Parser für boolean Flag-Logik mit:
 - **Tokenizer** (`tokenize_flag_expression()`) — Zerlegt String in Tokens
 - **Recursive-Descent-Parser** (`parse_flag_expression()`) — Erzeugt Abstract Syntax Tree (AST)
-- **Evaluator** (`evaluate_flag_ast()`, `evaluate_flag_expression()`) — Evaluiert AST gegen Flags
+- **Evaluator** (`evaluate_flag_ast()`, `evaluate_flag_expression()`) — Evaluiert AST gegen Tags/Flags
 
 **Operatoren:**
 - `,` (OR)  — mindestens einer muss wahr sein
@@ -27,19 +27,19 @@ Vollständiger Expression Parser für boolean Flag-Logik mit:
 
 #### 2. **`RScript/SleepTempFinder.R`** (UPDATED)
 - Laden des Parsers mit `source("flag_expression_parser.R")`
-- **Updated `parse_filter_string()`** — Unterstützt neuen Token-Typ `FlagsExpr=...`
-  - Alte Syntax `Flags=A|B` (OR) oder `Flags=A,B` (AND) bleibt funktionsfähig
-  - Neue Syntax `FlagsExpr=(A, B) & !C` für komplexe Expressions
-  - Return: Zusätzlicher `flags_ast` Feld in config-Struktur
-- **Updated `apply_analysis_subset_filter()`** — Evaluiert komplexe Flag-Expressions
-  - Falls `flags_ast` vorhanden: nutze `evaluate_flag_ast()`
-  - Sonst: fallback auf alte `flags_include`/`flags_mode` Logik
+- **Updated `parse_filter_string()`** — Unterstützt neuen Token-Typ `TagsExpr=...`
+  - Alte Syntax `Tags=A|B` (OR) oder `Tags=A,B` (AND) bleibt funktionsfähig
+  - Neue Syntax `TagsExpr=(A, B) & !C` für komplexe Expressions
+  - Return: Zusätzlicher `tags_ast` Feld in config-Struktur
+- **Updated `apply_analysis_subset_filter()`** — Evaluiert komplexe Tag-Expressions
+  - Falls `tags_ast` vorhanden: nutze `evaluate_flag_ast()`
+  - Sonst: fallback auf alte `tags_include`/`tags_mode` Logik
 
 #### 3. **`RScript/studio_commands.R`** (UPDATED)
 - **Updated `run_analysis()`** — Unterstützt DSL-Strings mit Operatoren
-  - `run_analysis(flags = "(Urlaub, Wohnmobil) & !HomeOffice")` ✓
+  - `run_analysis(tags = "(Urlaub, Wohnmobil) & !HomeOffice")` ✓
   - Erkennt Operatoren (`&`, `,`, `*`, `!`, `()`) automatisch
-  - Konvertiert zu `FlagsExpr=` wenn Operatoren erkannt werden
+  - Konvertiert zu `TagsExpr=` wenn Operatoren erkannt werden
   - Entfernt Whitespace aus Expressions
 - **Updated Docstring** — Dokumentiert neue Operatoren und Priorität
 
@@ -74,36 +74,36 @@ source('RScript/test_flag_expressions.R')
 ```r
 source('RScript/studio_commands.R')
 
-# Einfache Flags (alte Syntax, noch unterstützt)
-run_analysis(flags = 'Urlaub')
-run_analysis(flags = 'Urlaub,Wohnmobil')
+# Einfache Tags (alte Syntax, noch unterstützt)
+run_analysis(tags = 'Urlaub')
+run_analysis(tags = 'Urlaub,Wohnmobil')
 
 # Neue: Komplexe Expressions (neue Syntax)
-run_analysis(flags = "Urlaub, Wohnmobil")            # A OR B
-run_analysis(flags = "Urlaub & Wohnmobil")           # A AND B  
-run_analysis(flags = "!HomeOffice")                   # NOT A
-run_analysis(flags = "Urlaub * Wohnmobil")            # A XOR B (exactly one)
+run_analysis(tags = "Urlaub, Wohnmobil")            # A OR B
+run_analysis(tags = "Urlaub & Wohnmobil")           # A AND B  
+run_analysis(tags = "!HomeOffice")                   # NOT A
+run_analysis(tags = "Urlaub * Wohnmobil")            # A XOR B (exactly one)
 
 # Komplexe Expressions mit Klammern
-run_analysis(flags = "(Urlaub, Wohnmobil) & !HomeOffice")
-run_analysis(flags = "(!Urlaub & Wohnmobil), HomeOffice")
+run_analysis(tags = "(Urlaub, Wohnmobil) & !HomeOffice")
+run_analysis(tags = "(!Urlaub & Wohnmobil), HomeOffice")
 
 # R-Vergleich-Syntax (automatisch konvertiert)
-run_analysis(flags != 'Hochlitten')                # Konvertiert zu: FlagsExpr=!Hochlitten
-run_analysis(flags == 'Hochlitten')                # Konvertiert zu: FlagsExpr=Hochlitten
-run_analysis(flags %in% c('Urlaub', 'Wohnmobil')) # Konvertiert zu: FlagsExpr=Urlaub, Wohnmobil
+run_analysis(tags != 'Hochlitten')                # Konvertiert zu: TagsExpr=!Hochlitten
+run_analysis(tags == 'Hochlitten')                # Konvertiert zu: TagsExpr=Hochlitten
+run_analysis(tags %in% c('Urlaub', 'Wohnmobil')) # Konvertiert zu: TagsExpr=Urlaub, Wohnmobil
 
 # Mit anderen Parametern kombinieren
-run_analysis('2025', flags = "(Urlaub, Wohnmobil) & !HomeOffice")
+run_analysis('2025', tags = "(Urlaub, Wohnmobil) & !HomeOffice")
 ```
 
 ### Von Command Line (via `--filter=`):
 
 ```bash
-Rscript RScript/SleepTempFinder.R --filter="FlagsExpr=(Urlaub, Wohnmobil) & !HomeOffice"
+Rscript RScript/SleepTempFinder.R --filter="TagsExpr=(Urlaub, Wohnmobil) & !HomeOffice"
 
-# Mit Datum + Sensor + komplexem Flag-Filter
-Rscript RScript/SleepTempFinder.R --filter="2025;Sensors=FlorianZimmerSensor;FlagsExpr=(Urlaub, Wohnmobil) & !HomeOffice;temp>18"
+# Mit Datum + Sensor + komplexem Tag-Filter
+Rscript RScript/SleepTempFinder.R --filter="2025;Sensors=FlorianZimmerSensor;TagsExpr=(Urlaub, Wohnmobil) & !HomeOffice;temp>18"
 ```
 
 ---
@@ -133,28 +133,28 @@ Die Implementierung wurde mit folgenden Test-Szenarien validiert:
 - `parse_filter_string()` integriert
 - `apply_analysis_subset_filter()` nutzt Evaluator
 - `run_analysis()` erkennt Operatoren automatisch
-- Backward-Compat mit alter `Flags=` Syntax
+- Backward-Compat mit alter `Flags=` / `Tags=` Syntax
 
 ---
 
 ## ✅ Backward Compatibility
 
 ✅ **Vollständig erhalten:**
-- Alte Syntax `Flags=A|B` (OR-Modus)
-- Alte Syntax `Flags=A,B` (AND-Modus)
-- Alte Syntax `Flags=A` (Einzel-Flag)
-- Fallback auf alte Logik wenn kein `flags_ast` vorhanden
+- Alte Syntax `Tags=A|B` (OR-Modus)
+- Alte Syntax `Tags=A,B` (AND-Modus)
+- Alte Syntax `Tags=A` (Einzel-Tag)
+- Fallback auf alte Logik wenn kein `tags_ast` vorhanden
 - Normale Column-Expressions (temp>18, SleepScore>80) funktionieren noch
 
 Beispiel:
 ```r
 # Alt (funktioniert noch):
-run_analysis(flags = "Urlaub|Wohnmobil")      # OR-Modus
+run_analysis(tags = "Urlaub|Wohnmobil")      # OR-Modus
 
 # Neu (auch möglich):
-run_analysis(flags = "Urlaub, Wohnmobil")     # Oder-Operator
-run_analysis(flags = "(Urlaub, Wohnmobil)")   # Dasselbe mit Klammern
-run_analysis(flags != "Hochlitten")           # R-Vergleich-Syntax (NEU!)
+run_analysis(tags = "Urlaub, Wohnmobil")     # Oder-Operator
+run_analysis(tags = "(Urlaub, Wohnmobil)")   # Dasselbe mit Klammern
+run_analysis(tags != "Hochlitten")           # R-Vergleich-Syntax (NEU!)
 ```
 
 ## 🔧 Dual-Layer Detection für Flag-Vergleiche
@@ -162,8 +162,8 @@ run_analysis(flags != "Hochlitten")           # R-Vergleich-Syntax (NEU!)
 Die Implementierung erkennt und konvertiert Flag-Vergleiche auf zwei Ebenen:
 
 1. **Layer 1: `run_analysis()`** (studio_commands.R)
-   - Erkennt `flags != 'X'` Pattern in deparsed Ausdrücken
-   - Konvertiert zu `FlagsExpr=!X` Format
+   - Erkennt `tags != 'X'` oder `flags != 'X'` Pattern in deparsed Ausdrücken
+   - Konvertiert zu `TagsExpr=!X` Format
 
 2. **Layer 2: `apply_analysis_subset_filter()`** (SleepTempFinder.R)
    - Erkennt Flag-Vergleiche auch wenn sie als arbitrary expressions ankommen

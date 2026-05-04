@@ -26,30 +26,30 @@
   if (is.null(path) || path == "") NA_character_ else dirname(path)
 }
 
-cat("Command Syntax: run_analysis(date=NULL, flags=NULL, sensors=NULL, dry_run=FALSE, filter=NULL)\n\n",
-    "  date/flags/sensors may be given positionally or by name; date is\n",
+cat("Command Syntax: run_analysis(date=NULL, tags=NULL, sensors=NULL, dry_run=FALSE, filter=NULL)\n\n",
+    "  date/tags/sensors may be given positionally or by name; date is\n",
     "  optional and when first it can be supplied without naming.\n\n",
-    "  `filter` accepts a raw string (e.g. '2025;Flags=Hochlitten' or 'temp>18').\n",
+    "  `filter` accepts a raw string (e.g. '2025;Tags=Hochlitten' or 'temp>18').\n",
     "  and overrides other arguments.  \n\n\n",
-    "  `flags` now supports complex boolean expressions:\n",
+    "  `tags` now supports complex boolean expressions:\n",
     "    - OR (,)       : A, B   →  true if A or B is set\n",
     "    - AND (&)      : A & B  →  true if both A and B are set\n",
     "    - NOT (!)      : !A     →  true if A is NOT set\n",
     "    - XOR (*)      : A * B  →  true if exactly one is set\n",
     "    - Parentheses  : (A & B), !C\n",
     "    - Precedence   : ! > * > & > ,\n\n",
-    "  You can also use R comparison syntax (auto-converted to FlagsExpr):\n",
-    "    - flags != 'Hochlitten'  →  FlagsExpr=!Hochlitten\n",
-    "    - flags == 'Hochlitten'  →  FlagsExpr=Hochlitten\n",
-    "    - flags %%in%% c('A', 'B') →  FlagsExpr=A, B\n\n",
+    "  You can also use R comparison syntax (auto-converted to TagsExpr):\n",
+    "    - tags != 'Hochlitten'  →  TagsExpr=!Hochlitten\n",
+    "    - tags == 'Hochlitten'  →  TagsExpr=Hochlitten\n",
+    "    - tags %%in%% c('A', 'B') →  TagsExpr=A, B\n\n",
     "  The filter grammar also supports logical expressions on any numeric column (e.g. SleepScore>80, 18<temp<22).\n",
     "  Unquoted comparison expressions can also be supplied \n",
     "  – the first argument is treated as a filter\n",
     "    if it looks like a logical test (run_analysis(temp>18)).\n\n",
-    "Example: run_analysis('2025'), run_analysis(flags='Hochlitten'), run_analysis(filter='temp>18'),\n",
+    "Example: run_analysis('2025'), run_analysis(tags='Hochlitten'), run_analysis(filter='temp>18'),\n",
     "         run_analysis('01.2025', sensors='Wohnwagen'), run_analysis(filter='SleepScore>80'),\n",
-    "         run_analysis(flags='(Urlaub, Wohnmobil) & !HomeOffice'),\n",
-    "         run_analysis(flags != 'Hochlitten')\n")
+    "         run_analysis(tags='(Urlaub, Wohnmobil) & !HomeOffice'),\n",
+    "         run_analysis(tags != 'Hochlitten')\n")
 # The primary helper is `run_analysis()`, which sets an environment variable
 # that the main script reads when in interactive mode.  (Recent updates also
 # ensure any duplicated sleep records for the same calendar date are collapsed
@@ -60,30 +60,30 @@ cat("Command Syntax: run_analysis(date=NULL, flags=NULL, sensors=NULL, dry_run=F
 #
 #   # original style: supply complete filter string
 #   run_analysis('2025')                       # run entire 2025 dataset (date arg)
-#   run_analysis('q1.2025;Flags=Hochlitten')   # first quarter + flag
+#   run_analysis('q1.2025;Tags=Hochlitten')   # first quarter + tag
 #   run_analysis('Sensors=Wohnwagen')         # Wohnwagen sensor only
 #
 #   # named-argument style (shorthand date allowed because it is first)
 #   run_analysis('2025')                       # equivalent to date='2025'
-#   run_analysis(flags = 'Hochlitten')         # specify only flags
+#   run_analysis(tags = 'Hochlitten')         # specify only tags
 #   run_analysis(sensors = c('Wohnwagen','FlorianZimmerSensor'))
-#   run_analysis('01.2025', flags = 'Quiet,Vacation')  # date + flags
+#   run_analysis('01.2025', tags = 'Quiet,Vacation')  # date + tags
 #   run_analysis(date = '01.2025', sensors = 'Wohnwagen')  # explicit name
-#   run_analysis(filter = 'Flags=Hochlitten|Urlaub')  # raw string overrides others
+#   run_analysis(filter = 'Tags=Hochlitten|Urlaub')  # raw string overrides others
 #   run_analysis(filter = 'temp>18')              # keep nights with average temp > 18°C
 #   run_analysis(filter = 'SleepScore>80')         # biomarker filter example
-# Helper: Convert R comparison expressions like `flags != 'X'` to FlagsExpr format
+# Helper: Convert R comparison expressions like `tags != 'X'` to TagsExpr format
 # Examples:
-#   flags != 'Hochlitten'     →  !Hochlitten
-#   flags == 'Hochlitten'     →  Hochlitten
-#   flags %in% c('A', 'B')    →  A, B
-#   !(flags %in% c('A'))      →  !A
-convert_flag_comparison <- function(expr_str) {
+#   tags != 'Hochlitten'     →  !Hochlitten
+#   tags == 'Hochlitten'     →  Hochlitten
+#   tags %in% c('A', 'B')    →  A, B
+#   !(tags %in% c('A'))      →  !A
+convert_tag_comparison <- function(expr_str) {
   expr_str <- trimws(expr_str)
   
-  # Pattern 1: flags != 'value' or flags != "value"
-  if (grepl("flags\\s*!=\\s*", expr_str, perl = TRUE)) {
-    m <- regexec("flags\\s*!=\\s*['\"]([^'\"]+)['\"]", expr_str, perl = TRUE)
+  # Pattern 1: flags != 'value' or tags != 'value'
+  if (grepl("(?:flags|tags)\\s*!=\\s*", expr_str, perl = TRUE)) {
+    m <- regexec("(?:flags|tags)\\s*!=\\s*['\"]([^'\"]+)['\"]", expr_str, perl = TRUE)
     if (m[[1]][1] > 0) {
       value <- regmatches(expr_str, m)[[1]][2]
       if (!is.na(value)) {
@@ -92,9 +92,9 @@ convert_flag_comparison <- function(expr_str) {
     }
   }
   
-  # Pattern 2: flags == 'value' or flags == "value"
-  if (grepl("flags\\s*==\\s*", expr_str, perl = TRUE)) {
-    m <- regexec("flags\\s*==\\s*['\"]([^'\"]+)['\"]", expr_str, perl = TRUE)
+  # Pattern 2: flags == 'value' or tags == "value"
+  if (grepl("(?:flags|tags)\\s*==\\s*", expr_str, perl = TRUE)) {
+    m <- regexec("(?:flags|tags)\\s*==\\s*['\"]([^'\"]+)['\"]", expr_str, perl = TRUE)
     if (m[[1]][1] > 0) {
       value <- regmatches(expr_str, m)[[1]][2]
       if (!is.na(value)) {
@@ -103,9 +103,9 @@ convert_flag_comparison <- function(expr_str) {
     }
   }
   
-  # Pattern 3: flags %in% c('A', 'B', ...)
-  if (grepl("flags\\s*%in%\\s*c\\(", expr_str, perl = TRUE)) {
-    m <- regexec("flags\\s*%in%\\s*c\\((.+?)\\)", expr_str, perl = TRUE)
+  # Pattern 3: flags %in% c('A', 'B', ...) or tags %in% c(...)
+  if (grepl("(?:flags|tags)\\s*%in%\\s*c\\(", expr_str, perl = TRUE)) {
+    m <- regexec("(?:flags|tags)\\s*%in%\\s*c\\((.+?)\\)", expr_str, perl = TRUE)
     if (m[[1]][1] > 0) {
       values_str <- regmatches(expr_str, m)[[1]][2]
       if (!is.na(values_str)) {
@@ -136,7 +136,7 @@ convert_flag_comparison <- function(expr_str) {
   return(NULL)
 }
 
-run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FALSE, filter = NULL) {
+run_analysis <- function(date = NULL, tags = NULL, sensors = NULL, dry_run = FALSE, filter = NULL, flags = NULL) {
   # signature arranged so the first positional argument is `date`.
   # `filter` is now last and should only be used when you want to pass a
   # raw filter expression; otherwise the named args form the preferred API.
@@ -148,22 +148,22 @@ run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FA
   # Capture all unevaluated arguments
   date_expr <- substitute(date)
   filter_expr <- substitute(filter)
+  if (is.null(tags) && !is.null(flags)) {
+    tags <- flags
+  }
   
-  # NEW: Check if date_expr is a flags comparison (e.g., flags != 'Hochlitten')
+  # NEW: Check if date_expr is a tags or flags comparison (e.g., tags != 'Hochlitten')
   if (is.null(filter) && is.call(date_expr)) {
-    # Check if this is a comparison/membership operator on "flags"
     deparse_str <- deparse(date_expr)
-    
-    # Better regex: check for flags with comparison operators
-    if (grepl("flags\\s*(==|!=|%in%)", deparse_str, perl = TRUE)) {
-      # Convert to FlagsExpr format
-      converted <- convert_flag_comparison(deparse_str)
+    if (grepl("(?:flags|tags)\\s*(==|!=|%in%)", deparse_str, perl = TRUE)) {
+      # Convert to TagsExpr format
+      converted <- convert_tag_comparison(deparse_str)
       if (!is.null(converted)) {
-        filter <- paste0("FlagsExpr=", converted)
+        filter <- paste0("TagsExpr=", converted)
         date <- NULL
       }
     } else {
-      # Not a flags comparison, treat as normal filter expression
+      # Not a tags/flags comparison, treat as normal filter expression
       filter <- deparse_str
       date <- NULL
     }
@@ -184,14 +184,14 @@ run_analysis <- function(date = NULL, flags = NULL, sensors = NULL, dry_run = FA
     if (!is.null(date)) {
       parts <- c(parts, date)
     }
-    if (!is.null(flags)) {
-      if (length(flags) > 1) flags <- paste(flags, collapse = ",")
-      # NEW: detect if flags contains boolean operators
-      # If it does, use FlagsExpr= instead of Flags=
-      if (grepl("[&,*!()]", flags, perl = TRUE)) {
-        parts <- c(parts, paste0("FlagsExpr=", flags))
+    if (!is.null(tags)) {
+      if (length(tags) > 1) tags <- paste(tags, collapse = ",")
+      # NEW: detect if tags contains boolean operators
+      # If it does, use TagsExpr= instead of Tags=
+      if (grepl("[&,*!()]", tags, perl = TRUE)) {
+        parts <- c(parts, paste0("TagsExpr=", tags))
       } else {
-        parts <- c(parts, paste0("Flags=", flags))
+        parts <- c(parts, paste0("Tags=", tags))
       }
     }
     if (!is.null(sensors)) {
@@ -300,7 +300,7 @@ run_clear_filter <- function() {
 
 run_winter2026 <- function() run_analysis('02.2026')
 run_wohnwagen <- function() run_analysis('Sensors=Wohnwagen')
-run_hochlitten <- function() run_analysis('Flags=Hochlitten')
+run_hochlitten <- function() run_analysis('Tags=Hochlitten')
 
 # The above functions are simple wrappers; you may create your own presets
 # or call run_analysis() directly.  If you prefer RStudio Addins, point them
