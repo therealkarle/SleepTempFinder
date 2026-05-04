@@ -122,6 +122,16 @@ if (is.null(plot_cfg)) plot_cfg <- list()
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
+# summary interval for reported value ranges; default is 90% if config value missing or invalid
+summary_interval <- if (!is.null(config$summary_interval)) as.numeric(config$summary_interval) else NA_real_
+if (is.na(summary_interval) || summary_interval <= 0 || summary_interval >= 1) {
+  summary_interval <- 0.90
+}
+summary_percent <- format(round(summary_interval * 100), trim = TRUE, scientific = FALSE)
+summary_interval_label <- sprintf("%s%% Value Interval", summary_percent)
+summary_interval_lower <- (1 - summary_interval) / 2
+summary_interval_upper <- 1 - summary_interval_lower
+
 plot_export_cfg <- plot_cfg$export
 if (is.null(plot_export_cfg)) plot_export_cfg <- list()
 plot_export_enabled <- if (is.null(plot_export_cfg$enabled)) TRUE else isTRUE(plot_export_cfg$enabled)
@@ -1647,18 +1657,39 @@ if (n_filtered_out > 0) {
 cat("\n")
 
 if (n_after_analysis_filter > 0) {
+  format_ci_value <- function(x) {
+    if (is.na(x)) return(NA_character_)
+    s <- format(round(x, 2), nsmall = 2, trim = TRUE)
+    sub("\\.?0+$", "", s)
+  }
+
   summarize_metric <- function(df, col) {
     vals <- df[[col]]
     vals <- vals[!is.na(vals)]
     if (length(vals) == 0) {
-      return(tibble(metric = col, mean = NA_real_, median = NA_real_, variance = NA_real_))
+      out <- tibble(
+        metric = col,
+        mean = NA_real_,
+        median = NA_real_,
+        std_dev = NA_real_
+      )
+      out[[summary_interval_label]] <- NA_character_
+      return(out)
     }
-    tibble(
+    n <- length(vals)
+    mean_val <- mean(vals)
+    sd_val <- if (n > 1) sd(vals) else NA_real_
+    q_bounds <- quantile(vals, c(summary_interval_lower, summary_interval_upper), na.rm = TRUE, type = 7)
+    out <- tibble(
       metric = col,
-      mean = mean(vals),
+      mean = mean_val,
       median = median(vals),
-      variance = if (length(vals) > 1) var(vals) else NA_real_
+      std_dev = sd_val
     )
+    out[[summary_interval_label]] <- sprintf("[%s;%s]",
+      format_ci_value(q_bounds[[1]]),
+      format_ci_value(q_bounds[[2]]))
+    out
   }
   stat_cols <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
   stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
