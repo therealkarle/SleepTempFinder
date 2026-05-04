@@ -1644,6 +1644,7 @@ cat(sprintf("Nights kept after filter application: %d\n", n_after_analysis_filte
 if (n_filtered_out > 0) {
   cat(sprintf("Nights removed by date/analysis filters: %d\n", n_filtered_out))
 }
+cat("\n")
 
 if (n_after_analysis_filter > 0) {
   summarize_metric <- function(df, col) {
@@ -1661,7 +1662,7 @@ if (n_after_analysis_filter > 0) {
   }
   stat_cols <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
   stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
-  cat("\nSummary statistics for used nights:\n")
+  cat("\nStatistics for used nights:\n\n")
   print(stats_df)
   cat("\n\n")
 } else {
