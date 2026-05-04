@@ -30,7 +30,7 @@ locale:
 matching_padding_minutes: 30
 
 # summary interval for reported value ranges (0.90 = 90% value interval)
-summary_interval: 0.90
+summary_interval: 0.80
 
 # scan behaviour: if recursive is true, every CSV under data_directory (subfolders included)
 # will be inspected. Useful when sensor or sleep files are placed in date-named subfolders.

@@ -681,6 +681,16 @@ clean_val_final <- function(x) {
   return(res)
 }
 
+format_hours_minutes <- function(hours) {
+  hours_num <- as.numeric(hours)
+  total_minutes <- round(hours_num * 60)
+  hh <- total_minutes %/% 60
+  mm <- total_minutes %% 60
+  out <- sprintf("%02d:%02d", hh, mm)
+  out[is.na(hours_num)] <- NA_character_
+  out
+}
+
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0) return(y)
   x
@@ -1438,11 +1448,13 @@ sleep_complete <- {
   sleep_col <- resolve_sleep_col(mapping, hdr, "garmin_sleep_score")
   hrv_col <- resolve_sleep_col(mapping, hdr, "garmin_hrv", "garmin_hrv_alt")
   rhr_col <- resolve_sleep_col(mapping, hdr, "garmin_rhr")
+  duration_col <- resolve_sleep_col(mapping, hdr, "garmin_duration")
   if (!is.null(sleep_col)) rename_map[["Sleep_Score"]] <- sleep_col
   if (!is.null(hrv_col)) rename_map[["HRV"]] <- hrv_col
   if (!is.null(rhr_col)) rename_map[["RHR"]] <- rhr_col
+  if (!is.null(duration_col)) rename_map[["Sleep_Duration"]] <- duration_col
   sleep_df_raw %>% rename(!!!rename_map) %>%
-    mutate(across(any_of(c("Sleep_Score", "HRV", "RHR")), clean_val_final))
+    mutate(across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final))
 }
 
 # drop rows with missing critical sleep metrics immediately
@@ -1669,9 +1681,9 @@ if (n_after_analysis_filter > 0) {
     if (length(vals) == 0) {
       out <- tibble(
         metric = col,
-        mean = NA_real_,
-        median = NA_real_,
-        std_dev = NA_real_
+        mean = NA_character_,
+        median = NA_character_,
+        std_dev = NA_character_
       )
       out[[summary_interval_label]] <- NA_character_
       return(out)
@@ -1680,18 +1692,19 @@ if (n_after_analysis_filter > 0) {
     mean_val <- mean(vals)
     sd_val <- if (n > 1) sd(vals) else NA_real_
     q_bounds <- quantile(vals, c(summary_interval_lower, summary_interval_upper), na.rm = TRUE, type = 7)
+    format_val <- if (col == "Sleep_Duration") format_hours_minutes else format_ci_value
     out <- tibble(
       metric = col,
-      mean = mean_val,
-      median = median(vals),
-      std_dev = sd_val
+      mean = format_val(mean_val),
+      median = format_val(median(vals)),
+      std_dev = ifelse(is.na(sd_val), NA_character_, format_val(sd_val))
     )
     out[[summary_interval_label]] <- sprintf("[%s;%s]",
-      format_ci_value(q_bounds[[1]]),
-      format_ci_value(q_bounds[[2]]))
+      format_val(q_bounds[[1]]),
+      format_val(q_bounds[[2]]))
     out
   }
-  stat_cols <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
+  stat_cols <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
   stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
   cat("\nStatistics for used nights:\n\n")
   print(stats_df)
@@ -1825,7 +1838,8 @@ dashboard_df <- final_data_viz %>%
     }),
     Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
   ) %>%
-  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR) %>%
+  mutate(Sleep_Duration = format_hours_minutes(Sleep_Duration)) %>%
+  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR, Sleep_Duration) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
 
