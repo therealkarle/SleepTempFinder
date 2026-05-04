@@ -223,6 +223,15 @@ outlier_filter:
       Avg_Abs_Hum:
         min: 5
         max: 12
+      Temp_SD:
+        min: 0
+        max: 2
+      Rel_Hum_SD:
+        min: 0
+        max: 5
+      Abs_Hum_SD:
+        min: 0
+        max: 2
       Sleep_Score:
         min: 50
         max: 100
@@ -251,6 +260,18 @@ outlier_filter:
         min: 0.05
         max: 0.95
       Avg_Abs_Hum:
+        sym: 1
+        min: 0.05
+        max: 0.95
+      Temp_SD:
+        sym: 1
+        min: 0.05
+        max: 0.95
+      Rel_Hum_SD:
+        sym: 1
+        min: 0.05
+        max: 0.95
+      Abs_Hum_SD:
         sym: 1
         min: 0.05
         max: 0.95

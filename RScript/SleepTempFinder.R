@@ -713,7 +713,7 @@ format_hours_minutes <- function(hours) {
   out
 }
 
-outlier_metrics <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
+outlier_metrics <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
 
 parse_outlier_threshold_value <- function(val, metric = NULL) {
   if (is.null(val) || length(val) == 0 || is.na(val) || val == "") return(NA_real_)
