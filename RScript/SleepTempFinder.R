@@ -2100,11 +2100,11 @@ dashboard_df <- final_data_viz %>%
 # --- 5. IMPACT ANALYSIS & OPTIMA ---
 env_analysis_vars <- list(
   "Room Temp" = list(col="Avg_Temp", unit="°C"), 
-  "Room Temp Variability" = list(col="Temp_SD", unit="°C"),
+  "Room Temp SD" = list(col="Temp_SD", unit="°C"),
   "Rel Humidity" = list(col="Avg_Rel_Hum", unit="%"),
-  "Rel Humidity Variability" = list(col="Rel_Hum_SD", unit="%"),
+  "Rel Humidity SD" = list(col="Rel_Hum_SD", unit="%"),
   "Abs Humidity" = list(col="Avg_Abs_Hum", unit="g/m³"),
-  "Abs Humidity Variability" = list(col="Abs_Hum_SD", unit="g/m³")
+  "Abs Humidity SD" = list(col="Abs_Hum_SD", unit="g/m³")
 )
 optima_storage <- list()
 
