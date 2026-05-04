@@ -90,6 +90,8 @@ Rscript RScript/SleepTempFinder.R --filter="SleepScore>80"
 Rscript RScript/SleepTempFinder.R --filter="TagsExpr=(Urlaub, Wohnmobil) & !Hochlitten"
 ```
 
+Hinweis: Die Ausreißererkennung wird über `RScript/config.yaml` konfiguriert. Setze `outlier_filter.mode` auf `false`, `manual` oder `value_interval`.
+
 ## Interaktive Nutzung in RStudio
 
 1. Öffne das Projekt in RStudio.

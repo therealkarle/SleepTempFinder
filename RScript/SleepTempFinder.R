@@ -668,14 +668,36 @@ read_garmin_fixed <- function(path) {
 }
 
 clean_val_final <- function(x) {
+  parse_duration_like <- function(val) {
+    txt <- str_trim(as.character(val))
+    txt <- str_replace_all(txt, ",", ".")
+    if (txt == "") return(NA_real_)
+
+    if (str_detect(txt, "^[-+]?[0-9]+:[0-5][0-9]$")) {
+      parts <- str_split(txt, ":", simplify = TRUE)
+      return(as.numeric(parts[1]) + as.numeric(parts[2]) / 60)
+    }
+
+    if (str_detect(txt, "^[-+]?[0-9]+\\s*h(?:\\s*[0-5]?[0-9]\\s*m?)?$") ) {
+      parts <- str_match(txt, "^([-+]?[0-9]+)\\s*h(?:\\s*([0-5]?[0-9])\\s*m?)?$")
+      hrs <- as.numeric(parts[1,2])
+      mins <- as.numeric(parts[1,3])
+      if (is.na(mins)) mins <- 0
+      return(hrs + mins / 60)
+    }
+
+    num_str <- str_extract(txt, "[-+]?[0-9]*\\.?[0-9]+")
+    as.numeric(num_str)
+  }
+
   res <- map_dbl(as.character(x), function(val) {
     if (is.na(val) || val == "" || val == "--") return(NA_real_)
-    if (str_detect(val, "h")) {
-      h <- as.numeric(str_extract(val, "\\d+(?=h)"))
-      m <- as.numeric(str_extract(val, "\\d+(?=min)"))
-      return(ifelse(is.na(h), 0, h) + (ifelse(is.na(m), 0, m)/60))
+    if (str_detect(val, ":") || str_detect(val, "h")) {
+      parsed <- parse_duration_like(val)
+      if (!is.na(parsed)) return(parsed)
     }
-    num_str <- str_extract(val, "[-+]?[0-9]*\\.?[0-9]+")
+    num_str <- str_replace_all(as.character(val), ",", ".")
+    num_str <- str_extract(num_str, "[-+]?[0-9]*\\.?[0-9]+")
     return(as.numeric(num_str))
   })
   return(res)
@@ -689,6 +711,216 @@ format_hours_minutes <- function(hours) {
   out <- sprintf("%02d:%02d", hh, mm)
   out[is.na(hours_num)] <- NA_character_
   out
+}
+
+outlier_metrics <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
+
+parse_outlier_threshold_value <- function(val, metric = NULL) {
+  if (is.null(val) || length(val) == 0 || is.na(val) || val == "") return(NA_real_)
+  if (is.numeric(val)) return(as.numeric(val))
+  txt <- str_trim(as.character(val))
+  txt <- str_replace_all(txt, ",", ".")
+  if (txt == "") return(NA_real_)
+
+  if (str_detect(txt, "^[-+]?[0-9]+:[0-5][0-9]$")) {
+    parts <- str_split(txt, ":", simplify = TRUE)
+    return(as.numeric(parts[1]) + as.numeric(parts[2]) / 60)
+  }
+
+  if (str_detect(txt, "^[-+]?[0-9]+\\s*h(?:\\s*[0-5]?[0-9]\\s*m?)?$") ) {
+    parts <- str_match(txt, "^([-+]?[0-9]+)\\s*h(?:\\s*([0-5]?[0-9])\\s*m?)?$")
+    hrs <- as.numeric(parts[1,2])
+    mins <- as.numeric(parts[1,3])
+    if (is.na(mins)) mins <- 0
+    return(hrs + mins / 60)
+  }
+
+  num_str <- str_extract(txt, "[-+]?[0-9]*\\.?[0-9]+")
+  as.numeric(num_str)
+}
+
+is_outlier_value <- function(value, min_val, max_val) {
+  if (is.na(value)) return(FALSE)
+  if (!is.na(min_val) && value < min_val) return(TRUE)
+  if (!is.na(max_val) && value > max_val) return(TRUE)
+  FALSE
+}
+
+normalize_outlier_filter <- function(cfg) {
+  if (is.null(cfg)) return(list(mode = "false"))
+  mode <- cfg$mode %||% cfg$enabled %||% "false"
+  if (is.logical(mode)) {
+    if (!isTRUE(mode)) return(list(mode = "false"))
+    mode <- "manual"
+  }
+  mode <- tolower(as.character(mode))
+  if (mode %in% c("false", "off", "none", "no")) return(list(mode = "false"))
+  if (!mode %in% c("manual", "value_interval")) {
+    warning(sprintf("Unknown outlier_filter.mode '%s'; disabling outlier filtering.", mode))
+    return(list(mode = "false"))
+  }
+
+  columns <- trim_vector(cfg$columns %||% character(0))
+  if (length(columns) == 0) {
+    columns <- outlier_metrics
+  }
+
+  if (mode == "manual") {
+    manual_cfg <- cfg$manual$metrics %||% cfg$manual %||% list()
+    bounds <- list()
+    for (metric in names(manual_cfg)) {
+      metric_cfg <- manual_cfg[[metric]]
+      if (!is.list(metric_cfg)) next
+      min_val <- parse_outlier_threshold_value(metric_cfg$min, metric)
+      max_val <- parse_outlier_threshold_value(metric_cfg$max, metric)
+      if (!is.na(min_val) || !is.na(max_val)) {
+        bounds[[metric]] <- list(min = min_val, max = max_val)
+      }
+    }
+    if (length(columns) == 0) columns <- names(bounds)
+    return(list(mode = "manual", columns = columns, manual_bounds = bounds))
+  }
+
+  # value_interval
+  vi_cfg <- cfg$value_interval %||% cfg
+  interval <- as.numeric(vi_cfg$interval %||% 0.9)
+  if (is.na(interval) || interval <= 0 || interval >= 1) interval <- 0.9
+  symmetric <- if (is.null(vi_cfg$symmetric)) TRUE else isTRUE(vi_cfg$symmetric)
+  use_individual <- if (is.null(vi_cfg$use_individual)) FALSE else isTRUE(vi_cfg$use_individual)
+  global_min <- parse_outlier_threshold_value(vi_cfg$min)
+  global_max <- parse_outlier_threshold_value(vi_cfg$max)
+  metric_overrides <- vi_cfg$metrics %||% list()
+
+  if (length(columns) == 0) {
+    if (use_individual && length(metric_overrides) > 0) {
+      columns <- trim_vector(names(metric_overrides))
+    } else {
+      columns <- outlier_metrics
+    }
+  }
+
+  list(mode = "value_interval",
+       columns = columns,
+       symmetric = symmetric,
+       interval = interval,
+       use_individual = use_individual,
+       global_min = global_min,
+       global_max = global_max,
+       metric_overrides = metric_overrides)
+}
+
+resolve_value_interval_probs <- function(metric_cfg, global_cfg) {
+  metric_cfg <- metric_cfg %||% list()
+  lower <- metric_cfg$min %||% metric_cfg$lower
+  upper <- metric_cfg$max %||% metric_cfg$upper
+  sym_width <- if (!is.null(metric_cfg$sym)) as.numeric(metric_cfg$sym) else NA_real_
+  interval <- if (!is.null(metric_cfg$interval)) as.numeric(metric_cfg$interval) else global_cfg$interval
+  if (length(interval) == 0 || is.na(interval) || interval <= 0 || interval >= 1) interval <- global_cfg$interval
+
+  if (!is.na(sym_width) && sym_width > 0 && sym_width < 1 && (is.null(lower) || is.null(upper))) {
+    lower <- (1 - sym_width) / 2
+    upper <- 1 - lower
+  }
+
+  if (is.null(lower) && !is.null(upper)) lower <- 1 - as.numeric(upper)
+  if (is.null(upper) && !is.null(lower)) upper <- 1 - as.numeric(lower)
+  lower <- as.numeric(lower)
+  upper <- as.numeric(upper)
+  if (length(lower) == 0) lower <- NA_real_
+  if (length(upper) == 0) upper <- NA_real_
+
+  if (is.na(lower) || is.na(upper) || lower >= upper) {
+    if (!is.na(global_cfg$global_min) && !is.na(global_cfg$global_max)) {
+      lower <- global_cfg$global_min
+      upper <- global_cfg$global_max
+    } else if (isTRUE(global_cfg$symmetric)) {
+      lower <- (1 - interval) / 2
+      upper <- 1 - lower
+    } else {
+      lower <- global_cfg$lower
+      upper <- global_cfg$upper
+    }
+  }
+
+  lower <- max(0, min(1, lower))
+  upper <- max(0, min(1, upper))
+  list(lower = lower, upper = upper)
+}
+
+compute_outlier_bounds <- function(df, outlier_cfg, metrics) {
+  cfg <- normalize_outlier_filter(outlier_cfg)
+  if (cfg$mode == "false" || nrow(df) == 0) return(list())
+
+  columns <- intersect(cfg$columns, names(df))
+  if (length(columns) == 0) columns <- intersect(metrics, names(df))
+  if (length(columns) == 0) return(list())
+
+  bounds <- list()
+  if (cfg$mode == "manual") {
+    for (metric in columns) {
+      if (!is.null(cfg$manual_bounds[[metric]])) {
+        bounds[[metric]] <- cfg$manual_bounds[[metric]]
+      }
+    }
+    return(bounds)
+  }
+
+  global_cfg <- list(lower = cfg$global_min,
+                     upper = cfg$global_max,
+                     symmetric = cfg$symmetric,
+                     interval = cfg$interval,
+                     global_min = cfg$global_min,
+                     global_max = cfg$global_max,
+                     use_individual = cfg$use_individual)
+  for (metric in columns) {
+    if (!metric %in% names(df) || !is.numeric(df[[metric]])) next
+    metric_cfg <- if (isTRUE(cfg$use_individual)) cfg$metric_overrides[[metric]] %||% list() else list()
+    probs <- resolve_value_interval_probs(metric_cfg, global_cfg)
+    quantiles <- quantile(df[[metric]], probs = c(probs$lower, probs$upper), na.rm = TRUE, names = FALSE, type = 7)
+    bounds[[metric]] <- list(min = as.numeric(quantiles[1]), max = as.numeric(quantiles[2]))
+  }
+  bounds
+}
+
+get_outlier_columns_from_row <- function(row, bounds) {
+  outlier_columns <- character(0)
+  for (metric in names(bounds)) {
+    if (!metric %in% names(row)) next
+    value <- row[[metric]]
+    if (is_outlier_value(value, bounds[[metric]]$min, bounds[[metric]]$max)) {
+      outlier_columns <- c(outlier_columns, metric)
+    }
+  }
+  outlier_columns
+}
+
+apply_outlier_filter <- function(df, outlier_cfg) {
+  cfg <- normalize_outlier_filter(outlier_cfg)
+  if (cfg$mode == "false" || nrow(df) == 0) {
+    out <- df %>% mutate(Outlier_Columns = list(character(0)), Outlier_Reason = NA_character_)
+    return(list(data = out, excluded = as.Date(character(0)), bounds = list()))
+  }
+
+  bounds <- compute_outlier_bounds(df, cfg, outlier_metrics)
+  if (length(bounds) == 0) {
+    out <- df %>% mutate(Outlier_Columns = list(character(0)), Outlier_Reason = NA_character_)
+    return(list(data = out, excluded = as.Date(character(0)), bounds = bounds))
+  }
+
+  out <- df %>%
+    mutate(
+      Outlier_Columns = pmap(select(., all_of(names(bounds))), function(...) {
+        get_outlier_columns_from_row(set_names(list(...), names(bounds)), bounds)
+      }),
+      Outlier_Reason = map_chr(Outlier_Columns, function(cols) {
+        if (length(cols) == 0) return(NA_character_)
+        paste(cols, collapse = ", ")
+      })
+    )
+
+  excluded <- out %>% filter(map_int(Outlier_Columns, length) > 0) %>% pull(Date)
+  filtered <- out %>% filter(map_int(Outlier_Columns, length) == 0)
+  list(data = filtered, excluded = unique(as.Date(excluded)), bounds = bounds)
 }
 
 `%||%` <- function(x, y) {
@@ -1598,11 +1830,16 @@ if (!is.null(cli_filter) && !is.null(cli_filter$date_start)) {
     filter(Date >= cli_filter$date_start & Date <= cli_filter$date_end)
 }
 
+outlier_result <- apply_outlier_filter(final_data_matched, config$outlier_filter)
+excluded_outlier_dates_dates <- outlier_result$excluded
+final_data_matched <- outlier_result$data
+
+n_before_analysis_filter_post_outlier <- nrow(final_data_matched)
 final_data_matched <- apply_analysis_subset_filter(final_data_matched, config$analysis_filter)
 n_after_analysis_filter <- nrow(final_data_matched)
 
 if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
-  cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter))
+  cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter_post_outlier))
 }
 
 if(nrow(final_data_matched) > 0) {
