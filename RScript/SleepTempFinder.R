@@ -965,7 +965,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
 
   calendar_daily <- calendar_daily %>% select(Date, Sensor, Flags, Flags_List)
 
-  cat(sprintf("Calendar loaded: %d day assignments parsed.\n", nrow(calendar_daily)))
+  cat(sprintf("Calendar loaded: %d days parsed.\n\n", nrow(calendar_daily)))
   calendar_daily
 }
 
@@ -1170,18 +1170,19 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
 classification <- local({
   all_data_files <- list_csv_files(config$data_directory, recursive = isTRUE(config$scan_recursive))
   cat(sprintf("Found %d CSV file(s) under %s (recursive=%s)\n", length(all_data_files), config$data_directory, isTRUE(config$scan_recursive)))
+  cat("\n")
 
   # classify discovered files
   sleep_candidates <- all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
   sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, sensor_files = config$sensor_files)]
   unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
-  cat(sprintf("  sleep candidates: %d\n", length(sleep_candidates)))
+  cat(sprintf("Sleep candidates: %d\n", length(sleep_candidates)))
   if (isTRUE(verbose) && length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
   # show canonical names
   if (isTRUE(verbose) && length(sleep_candidates) > 0) {
     cat("    canonical: ", paste(unique(canonical_basename(sleep_candidates)), collapse=", "), "\n")
   }
-  cat(sprintf("  sensor candidates: %d\n", length(sensor_candidates)))
+  cat(sprintf("Sensor candidates: %d\n", length(sensor_candidates)))
   if (isTRUE(verbose) && length(sensor_candidates) > 0) cat(paste0("    ", sensor_candidates, collapse="\n"), "\n")
   if (isTRUE(verbose) && length(sensor_candidates) > 0) {
     cat("    canonical: ", paste(unique(canonical_basename(sensor_candidates)), collapse=", "), "\n")
@@ -1191,8 +1192,10 @@ classification <- local({
       cat("Unclassified files (neither sleep nor sensor detected):\n", paste(unclassified_files, collapse = "\n"), "\n")
     } else {
       cat(sprintf("Unclassified files detected: %d (use --verbose for details)\n", length(unclassified_files)))
+      cat("\n")
     }
   }
+  cat("\n")
 
   # expand explicit paths and merge with discovered names
   explicit_sleep_raw <- file.path(config$data_directory, config$sleep_data_sources)
@@ -1230,6 +1233,7 @@ sleep_df_raw <- map_df(all_sleep_files, function(f) {
     if ("Datum" %in% hdr) {
       date_col <- "Datum"
       cat(sprintf("Warning: using alternate date column '%s' for file %s\n", date_col, f))
+      cat("\n")
     } else {
       alt <- hdr[str_detect(hdr, regex("^(Sleep Score|Datum)", ignore_case = TRUE))]
       if(length(alt) == 1) {
@@ -1326,7 +1330,7 @@ if (exists("sensor_raw") && nrow(sensor_raw) > 0) {
                   ifelse(is.na(row$Last_TS), "NA", format(row$Last_TS, "%Y-%m-%d %H:%M"))))
     }
   } else {
-    cat("Use --verbose for per-file sensor read details.\n")
+    cat("Use --verbose for per-file sensor read details.\n\n")
   }
 }
 
@@ -1367,8 +1371,7 @@ if (!is.na(default_sensor_id)) {
   n_na_before <- sum(is.na(calendar_daily$Sensor) & is.na(calendar_daily$Sensor_Raw))
   calendar_daily$Sensor[is.na(calendar_daily$Sensor) & is.na(calendar_daily$Sensor_Raw)] <- default_s
   if (n_na_before > 0) {
-    cat(sprintf("Calendar default sensor applied: '%s' to %d day(s)\n", 
-                default_s, n_na_before))
+    #cat(sprintf("Calendar default sensor applied: '%s' to %d day(s)\n",default_s, n_na_before))
   }
 }
 
@@ -1502,6 +1505,7 @@ if (length(dup_dates) > 0) {
   cat(sprintf("Warning: %d duplicate sleep records detected for dates: %s\n",
               length(dup_dates), paste(format(dup_dates, "%Y-%m-%d"), collapse = ", ")))
   temp_mapped <- temp_mapped %>% arrange(Date) %>% distinct(Date, .keep_all = TRUE)
+  cat("\n")
 }
 
 
@@ -1539,7 +1543,7 @@ nightly_review_df <- temp_mapped %>%
     )
   )
 # simple audit: how many distinct files and canonical names contribute
-cat(sprintf("Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n", 
+cat(sprintf("Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n", 
             nrow(nightly_review_df),
             n_distinct(nightly_review_df$Sleep_Source),
             n_distinct(nightly_review_df$Sleep_Name),
