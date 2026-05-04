@@ -748,6 +748,7 @@ is_outlier_value <- function(value, min_val, max_val) {
 
 normalize_outlier_filter <- function(cfg) {
   if (is.null(cfg)) return(list(mode = "false"))
+  if (!is.null(cfg$normalized) && isTRUE(cfg$normalized)) return(cfg)
   mode <- cfg$mode %||% cfg$enabled %||% "false"
   if (is.logical(mode)) {
     if (!isTRUE(mode)) return(list(mode = "false"))
@@ -778,7 +779,7 @@ normalize_outlier_filter <- function(cfg) {
       }
     }
     if (length(columns) == 0) columns <- names(bounds)
-    return(list(mode = "manual", columns = columns, manual_bounds = bounds))
+    return(list(mode = "manual", columns = columns, manual_bounds = bounds, normalized = TRUE))
   }
 
   # value_interval
@@ -806,7 +807,8 @@ normalize_outlier_filter <- function(cfg) {
        use_individual = use_individual,
        global_min = global_min,
        global_max = global_max,
-       metric_overrides = metric_overrides)
+       metric_overrides = metric_overrides,
+       normalized = TRUE)
 }
 
 resolve_value_interval_probs <- function(metric_cfg, global_cfg) {
@@ -830,12 +832,12 @@ resolve_value_interval_probs <- function(metric_cfg, global_cfg) {
   if (length(upper) == 0) upper <- NA_real_
 
   if (is.na(lower) || is.na(upper) || lower >= upper) {
-    if (!is.na(global_cfg$global_min) && !is.na(global_cfg$global_max)) {
-      lower <- global_cfg$global_min
-      upper <- global_cfg$global_max
-    } else if (isTRUE(global_cfg$symmetric)) {
+    if (isTRUE(global_cfg$symmetric)) {
       lower <- (1 - interval) / 2
       upper <- 1 - lower
+    } else if (!is.na(global_cfg$global_min) && !is.na(global_cfg$global_max)) {
+      lower <- global_cfg$global_min
+      upper <- global_cfg$global_max
     } else {
       lower <- global_cfg$lower
       upper <- global_cfg$upper
@@ -1868,9 +1870,6 @@ excluded_sensor_dates_all <- temp_mapped %>%
       (is.na(Avg_Abs_Hum) | is.nan(Avg_Abs_Hum))
   ) %>% 
   pull(Date)
-
-# no outlier filtering, so treat all sensor-missing nights equally
-excluded_outlier_dates_dates <- as.Date(character(0))
 
 # Nights that are missing room data (no filtering has been applied)
 excluded_sensor_dates <- excluded_sensor_dates_all

@@ -237,37 +237,37 @@ outlier_filter:
         max: "09:00"
   value_interval:
     symmetric: true
-    interval: 0.90
-    min: 0.05
-    max: 0.95
-    use_individual: false
+    interval: 0.95
+    min: 0.5
+    max: 0.9
+    use_individual: true
     metrics:
       Avg_Temp:
-        sym: 0.90
+        sym: 0.95
         min: 0.05
         max: 0.95
       Avg_Rel_Hum:
-        sym: 0.90
+        sym: 1
         min: 0.05
         max: 0.95
       Avg_Abs_Hum:
-        sym: 0.90
+        sym: 1
         min: 0.05
         max: 0.95
       Sleep_Score:
-        sym: 0.90
+        sym: 0.95
         min: 0.05
         max: 0.95
       HRV:
-        sym: 0.80
+        sym: 0.97
         min: 0.10
         max: 0.90
       RHR:
-        sym: 0.90
+        sym: 0.95
         min: 0.05
         max: 0.95
       Sleep_Duration:
-        sym: 0.80
+        sym: 0.98
         min: 0.10
         max: 0.90
 
