@@ -3,6 +3,8 @@
 # (usually kept at project root/data)
 data_directory: "../data"
 
+verbose: false
+
 # --- PARSING SETTINGS ---
 # lists of orders passed to lubridate::parse_date_time
 parse_orders:

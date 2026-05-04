@@ -544,7 +544,7 @@ detect_sensor_config <- function(path) {
   for (id in names(config$sensor_files)) {
     if (base == canonical_basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
   }
-  hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
+  hdr <- tryCatch(names(suppressMessages(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE, name_repair = "unique")))),
                   error = function(e) character(0))
   candidates <- names(config$sensor_files)[sapply(config$sensor_files, function(f) {
     all(c(f$col_time, f$col_temp, f$col_hum) %in% hdr)
@@ -1284,7 +1284,7 @@ get_sensor_file_info <- function(path) {
     if (base == basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
   }
   # otherwise, try header matching
-  hdr <- tryCatch(names(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE))),
+  hdr <- tryCatch(names(suppressMessages(suppressWarnings(read_delim(path, delim = ",", n_max = 1, locale = sensor_locale, show_col_types = FALSE, name_repair = "unique")))),
                   error = function(e) character(0))
   for (id in names(config$sensor_files)) {
     f <- config$sensor_files[[id]]
@@ -1297,7 +1297,7 @@ get_sensor_file_info <- function(path) {
 # read all discovered sensor CSVs, track source file and attempt column renaming
 sensor_raw <- map_df(all_sensor_files, function(fp) {
   f_info <- get_sensor_file_info(fp)
-  suppressWarnings(read_delim(fp, delim = ",", locale = sensor_locale, show_col_types = FALSE)) %>%
+  suppressMessages(suppressWarnings(read_delim(fp, delim = ",", locale = sensor_locale, show_col_types = FALSE, name_repair = "unique"))) %>%
     rename(timestamp = !!f_info$col_time, room_temp = !!f_info$col_temp, rel_hum = !!f_info$col_hum, abs_hum = `Abs Humidity(g/m³)`) %>%
     mutate(timestamp = parse_datetime_safe(timestamp, type = "sensor_timestamp")) %>%
     mutate(Source_File = fp,
@@ -1663,8 +1663,9 @@ if (n_after_analysis_filter > 0) {
   stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
   cat("\nSummary statistics for used nights:\n")
   print(stats_df)
+  cat("\n\n")
 } else {
-  cat("\nNo nights remain after filtering; summary statistics unavailable.\n")
+  cat("\nNo nights remain after filtering; summary statistics unavailable.\n\n\n\n")
 }
 
 # --- Plot helper functions (extracted so the same logic can be called twice) ---
