@@ -201,13 +201,19 @@ if ("browser" %in% run_modes) {
 # placeholder for browser viewer URL (populated when httpgd is started)
 browser_viewer_url <- NULL
 
+verbose <- isTRUE(config$verbose)
+log_verbose <- function(...) {
+  if (isTRUE(verbose)) cat(..., sep = "")
+}
+
 # ensure httpgd-based plotting is off by default so the first 'rstudio' pass
 # renders to the RStudio device even if previous runs enabled httpgd
 options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
 
-# command-line arguments support (dry run, --filter)
+# command-line arguments support (dry run, --verbose, --filter)
 #
 # Optional flag: --dry-run  (suppress plots, useful for automated runs)
+# Optional flag: --verbose  (enable extended debug output)
 #
 # Optional filter syntax (via --filter="...") allows restricting the
 # dataset.  The string is semicolon-separated and can include at most one
@@ -246,13 +252,19 @@ if (interactive()) {
     # simple split on whitespace; user helper should quote values if needed
     args <- strsplit(env_args, "\\s+")[[1]]
     Sys.unsetenv("_STF_ARGS_")
-    cat("Interactive override: args=", paste(args, collapse=" "), "\n")
+    log_verbose("Interactive override: args=", paste(args, collapse=" "), "\n")
   }
+}
+
+# command-line verbosity switch
+if ("--verbose" %in% args) {
+  verbose <- TRUE
+  args <- args[args != "--verbose"]
 }
 
 # support a help message
 if ("--help" %in% args || "-h" %in% args) {
-  cat("Usage: Rscript SleepTempFinder.R [--dry-run] [--filter='...']\n",
+  cat("Usage: Rscript SleepTempFinder.R [--dry-run] [--verbose] [--filter='...']\n",
       "Filter grammar: see script comments at top for examples.\n")
   quit(status = 0)
 }
@@ -403,7 +415,7 @@ for (a in args) {
 cli_filter <- NULL
 if (!is.null(filter_arg)) {
   cli_filter <- parse_filter_string(filter_arg)
-  cat("CLI filter parsed: ", capture.output(str(cli_filter)), "\n")
+  log_verbose("CLI filter parsed: ", paste(capture.output(str(cli_filter)), collapse = "\n"), "\n")
   # merge into analysis_filter config so downstream code can apply it
   if (is.null(config$analysis_filter)) config$analysis_filter <- list(enabled = TRUE)
   config$analysis_filter$enabled <- TRUE
@@ -1071,7 +1083,7 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
     for (expr in exprs) {
       # Check if this looks like a tags/flags comparison: tags or flags op value
       if (grepl("(?:flags|tags)\\s*(==|!=|%in%)", expr, perl = TRUE)) {
-        cat("[apply_analysis_subset_filter] Detected tag comparison in expr:", expr, "\n")
+        log_verbose("[apply_analysis_subset_filter] Detected tag comparison in expr: ", expr, "\n")
         flag_exprs <- c(flag_exprs, expr)
       } else {
         col_exprs <- c(col_exprs, expr)
@@ -1080,7 +1092,7 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
     
     # Process flag expressions by converting them to flags_ast and evaluating
     if (length(flag_exprs) > 0) {
-      cat("[apply_analysis_subset_filter] Processing", length(flag_exprs), "flag expressions\n")
+      log_verbose("[apply_analysis_subset_filter] Processing ", length(flag_exprs), " flag expressions\n")
       
       for (expr in flag_exprs) {
         expr <- trimws(expr)
@@ -1127,7 +1139,7 @@ apply_analysis_subset_filter <- function(df, filter_cfg) {
         
         # If we successfully converted, parse and evaluate as flag AST
         if (!is.null(converted_expr)) {
-          cat("[apply_analysis_subset_filter] Converted:", expr, "->", converted_expr, "\n")
+          log_verbose("[apply_analysis_subset_filter] Converted: ", expr, " -> ", converted_expr, "\n")
           tryCatch({
             flag_ast <- parse_flag_expression(converted_expr)
             out <- out %>%
@@ -1164,18 +1176,22 @@ classification <- local({
   sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, sensor_files = config$sensor_files)]
   unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
   cat(sprintf("  sleep candidates: %d\n", length(sleep_candidates)))
-  if(length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
+  if (isTRUE(verbose) && length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
   # show canonical names
-  if(length(sleep_candidates) > 0) {
+  if (isTRUE(verbose) && length(sleep_candidates) > 0) {
     cat("    canonical: ", paste(unique(canonical_basename(sleep_candidates)), collapse=", "), "\n")
   }
   cat(sprintf("  sensor candidates: %d\n", length(sensor_candidates)))
-  if(length(sensor_candidates) > 0) cat(paste0("    ", sensor_candidates, collapse="\n"), "\n")
-  if(length(sensor_candidates) > 0) {
+  if (isTRUE(verbose) && length(sensor_candidates) > 0) cat(paste0("    ", sensor_candidates, collapse="\n"), "\n")
+  if (isTRUE(verbose) && length(sensor_candidates) > 0) {
     cat("    canonical: ", paste(unique(canonical_basename(sensor_candidates)), collapse=", "), "\n")
   }
   if (length(unclassified_files) > 0) {
-    cat("Unclassified files (neither sleep nor sensor detected):\n", paste(unclassified_files, collapse = "\n"), "\n")
+    if (isTRUE(verbose)) {
+      cat("Unclassified files (neither sleep nor sensor detected):\n", paste(unclassified_files, collapse = "\n"), "\n")
+    } else {
+      cat(sprintf("Unclassified files detected: %d (use --verbose for details)\n", length(unclassified_files)))
+    }
   }
 
   # expand explicit paths and merge with discovered names
@@ -1296,14 +1312,21 @@ if (exists("sensor_raw") && nrow(sensor_raw) > 0) {
       Last_TS = if(all(is.na(timestamp))) as.POSIXct(NA) else max(timestamp, na.rm = TRUE),
       .groups = 'drop'
     )
+  total_rows <- sum(sensor_stats$N_Rows)
+  total_na <- sum(sensor_stats$N_NA_Timestamp)
 
-  cat("Sensor files read:\n")
-  for(i in seq_len(nrow(sensor_stats))) {
-    row <- sensor_stats[i,]
-    cat(sprintf(" - %s: rows=%d, NA_timestamps=%d, first=%s, last=%s\n",
-                as.character(row$Source_File), as.integer(row$N_Rows), as.integer(row$N_NA_Timestamp),
-                ifelse(is.na(row$First_TS), "NA", format(row$First_TS, "%Y-%m-%d %H:%M")),
-                ifelse(is.na(row$Last_TS), "NA", format(row$Last_TS, "%Y-%m-%d %H:%M"))))
+  cat(sprintf("Sensor files read: %d files, total rows=%d, total NA timestamps=%d\n",
+              nrow(sensor_stats), total_rows, total_na))
+  if (isTRUE(verbose)) {
+    for(i in seq_len(nrow(sensor_stats))) {
+      row <- sensor_stats[i,]
+      cat(sprintf(" - %s: rows=%d, NA_timestamps=%d, first=%s, last=%s\n",
+                  as.character(row$Source_File), as.integer(row$N_Rows), as.integer(row$N_NA_Timestamp),
+                  ifelse(is.na(row$First_TS), "NA", format(row$First_TS, "%Y-%m-%d %H:%M")),
+                  ifelse(is.na(row$Last_TS), "NA", format(row$Last_TS, "%Y-%m-%d %H:%M"))))
+    }
+  } else {
+    cat("Use --verbose for per-file sensor read details.\n")
   }
 }
 
@@ -1600,6 +1623,45 @@ calendar_days_raw_n <- nrow(calendar_daily_raw)
 calendar_days_after_rule_n <- nrow(calendar_daily)
 calendar_sensor_assigned_n <- sum(!is.na(temp_mapped$Sensor))
 calendar_flags_assigned_n <- sum(!is.na(temp_mapped$Flags))
+
+n_unique_sleep_dates <- n_distinct(sleep_complete$Date)
+n_excluded_sleep <- length(excluded_sleep_dates)
+n_excluded_sensor <- length(excluded_sensor_dates)
+n_excluded_outlier <- length(excluded_outlier_dates_dates)
+n_filtered_out <- n_before_analysis_filter - n_after_analysis_filter
+
+cat("\n=== NIGHTLY DATA SUMMARY ===\n")
+cat(sprintf("Total unique sleep dates discovered: %d\n", n_unique_sleep_dates))
+cat(sprintf("Excluded due to missing sleep data: %d\n", n_excluded_sleep))
+cat(sprintf("Excluded due to missing sensor data: %d\n", n_excluded_sensor))
+cat(sprintf("Excluded due to outlier filtering: %d\n", n_excluded_outlier))
+cat(sprintf("Nights considered for analysis before filters: %d\n", n_before_analysis_filter))
+cat(sprintf("Nights kept after filter application: %d\n", n_after_analysis_filter))
+if (n_filtered_out > 0) {
+  cat(sprintf("Nights removed by date/analysis filters: %d\n", n_filtered_out))
+}
+
+if (n_after_analysis_filter > 0) {
+  summarize_metric <- function(df, col) {
+    vals <- df[[col]]
+    vals <- vals[!is.na(vals)]
+    if (length(vals) == 0) {
+      return(tibble(metric = col, mean = NA_real_, median = NA_real_, variance = NA_real_))
+    }
+    tibble(
+      metric = col,
+      mean = mean(vals),
+      median = median(vals),
+      variance = if (length(vals) > 1) var(vals) else NA_real_
+    )
+  }
+  stat_cols <- c("Avg_Temp", "Avg_Rel_Hum", "Avg_Abs_Hum", "Sleep_Score", "HRV", "RHR")
+  stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
+  cat("\nSummary statistics for used nights:\n")
+  print(stats_df)
+} else {
+  cat("\nNo nights remain after filtering; summary statistics unavailable.\n")
+}
 
 # --- Plot helper functions (extracted so the same logic can be called twice) ---
 # Define biomarker variables (sleep quality indicators)

@@ -63,6 +63,12 @@ Mit Dry-Run (plots werden unterdrückt):
 Rscript RScript/SleepTempFinder.R --dry-run
 ```
 
+Mit Verbose-Ausgabe (zusätzliche Debug-Informationen):
+
+```sh
+Rscript RScript/SleepTempFinder.R --verbose
+```
+
 ### Filter-Syntax
 
 Die Filter werden als semikolon-getrennte Zeichenkette angegeben.
@@ -104,7 +110,7 @@ run_analysis(sensors = "WohnwagenSensor")
 run_analysis(filter = "temp>18")
 run_analysis(filter = "SleepScore>80")
 run_analysis(tags = "(Urlaub, Wohnmobil) & !Hochlitten")
-run_analysis(tags != 'Hochlitten')
+run_analysis(tags != 'Urlaub')
 ```
 
 ### `run_analysis()`-Argumente
