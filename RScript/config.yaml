@@ -211,7 +211,7 @@ analysis_filter:
 # symmetric central interval of the distribution, e.g. `sym: 0.80` means the
 # middle 80% of values.
 outlier_filter:
-  mode: value_interval
+  mode: manual
   manual:
     metrics:
       Avg_Temp:
@@ -228,7 +228,7 @@ outlier_filter:
         max: 100
       HRV:
         min: 20
-        max: 80
+        max: 120
       RHR:
         min: 35
         max: 80
