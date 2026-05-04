@@ -260,7 +260,7 @@ outlier_filter:
         max: 0.95
       HRV:
         sym: 0.97
-        min: 0.10
+        min: 0.1
         max: 0.90
       RHR:
         sym: 0.95

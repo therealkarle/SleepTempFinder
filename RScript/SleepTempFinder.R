@@ -819,28 +819,34 @@ resolve_value_interval_probs <- function(metric_cfg, global_cfg) {
   interval <- if (!is.null(metric_cfg$interval)) as.numeric(metric_cfg$interval) else global_cfg$interval
   if (length(interval) == 0 || is.na(interval) || interval <= 0 || interval >= 1) interval <- global_cfg$interval
 
-  if (!is.na(sym_width) && sym_width > 0 && sym_width < 1 && (is.null(lower) || is.null(upper))) {
-    lower <- (1 - sym_width) / 2
-    upper <- 1 - lower
-  }
-
-  if (is.null(lower) && !is.null(upper)) lower <- 1 - as.numeric(upper)
-  if (is.null(upper) && !is.null(lower)) upper <- 1 - as.numeric(lower)
-  lower <- as.numeric(lower)
-  upper <- as.numeric(upper)
-  if (length(lower) == 0) lower <- NA_real_
-  if (length(upper) == 0) upper <- NA_real_
-
-  if (is.na(lower) || is.na(upper) || lower >= upper) {
-    if (isTRUE(global_cfg$symmetric)) {
+  if (isTRUE(global_cfg$symmetric)) {
+    if (!is.na(sym_width) && sym_width > 0 && sym_width < 1) {
+      lower <- (1 - sym_width) / 2
+      upper <- 1 - lower
+    } else {
       lower <- (1 - interval) / 2
       upper <- 1 - lower
-    } else if (!is.na(global_cfg$global_min) && !is.na(global_cfg$global_max)) {
-      lower <- global_cfg$global_min
-      upper <- global_cfg$global_max
-    } else {
-      lower <- global_cfg$lower
-      upper <- global_cfg$upper
+    }
+  } else {
+    if (!is.na(sym_width) && sym_width > 0 && sym_width < 1 && (is.null(lower) || is.null(upper))) {
+      lower <- (1 - sym_width) / 2
+      upper <- 1 - lower
+    }
+    if (is.null(lower) && !is.null(upper)) lower <- 1 - as.numeric(upper)
+    if (is.null(upper) && !is.null(lower)) upper <- 1 - as.numeric(lower)
+    lower <- as.numeric(lower)
+    upper <- as.numeric(upper)
+    if (length(lower) == 0) lower <- NA_real_
+    if (length(upper) == 0) upper <- NA_real_
+
+    if (is.na(lower) || is.na(upper) || lower >= upper) {
+      if (!is.na(global_cfg$global_min) && !is.na(global_cfg$global_max)) {
+        lower <- global_cfg$global_min
+        upper <- global_cfg$global_max
+      } else {
+        lower <- global_cfg$lower
+        upper <- global_cfg$upper
+      }
     }
   }
 
