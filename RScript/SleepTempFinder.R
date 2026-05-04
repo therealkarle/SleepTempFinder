@@ -30,9 +30,6 @@ utils::globalVariables(
   c("Date", "Sensor", "Flags", "Flags_List", "sensor_values", "flags_values", ".flags_vec")
 )
 
-# Load flag expression parser for complex boolean flag expressions
-source("flag_expression_parser.R", local = FALSE)
-
 # always try to run from the script's directory so relative paths work.
 # this works in both interactive (RStudio) and non-interactive invocations.
 get_script_path <- function() {
@@ -73,6 +70,9 @@ if (!is.null(script_path)) {
   warning("could not determine SleepTempFinder.R location; working directory unchanged")
 }
 script_directory <- if (!is.null(script_path)) dirname(script_path) else normalizePath(getwd(), mustWork = FALSE)
+
+# Load flag expression parser for complex boolean flag expressions
+source(file.path(script_directory, "flag_expression_parser.R"), local = FALSE)
 
 # load configuration (primary + optional private override)
 config <- read_yaml("config.yaml")
