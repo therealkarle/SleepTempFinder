@@ -928,7 +928,10 @@ apply_outlier_filter <- function(df, outlier_cfg) {
 
   excluded <- out %>% filter(map_int(Outlier_Columns, length) > 0) %>% pull(Date)
   filtered <- out %>% filter(map_int(Outlier_Columns, length) == 0)
-  list(data = filtered, excluded = unique(as.Date(excluded)), bounds = bounds)
+  list(data = filtered,
+       all = out,
+       excluded = unique(as.Date(excluded)),
+       bounds = bounds)
 }
 
 `%||%` <- function(x, y) {
@@ -1840,6 +1843,7 @@ if (!is.null(cli_filter) && !is.null(cli_filter$date_start)) {
 
 outlier_result <- apply_outlier_filter(final_data_matched, config$outlier_filter)
 excluded_outlier_dates_dates <- outlier_result$excluded
+final_data_outlier_meta <- outlier_result$all
 final_data_matched <- outlier_result$data
 
 n_before_analysis_filter_post_outlier <- nrow(final_data_matched)
@@ -2068,6 +2072,9 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
 
 dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
+  select(-any_of(c("Outlier_Columns", "Outlier_Reason"))) %>%
+  # Attach any outlier metadata for the day, if available.
+  left_join(select(final_data_outlier_meta, Date, Outlier_Reason), by = "Date") %>%
   # Sensor_Files is a list-column; convert to semicolon-separated string for
   # ease of display.  Use Sensor_Names if you prefer canonical names instead.
   mutate(
@@ -2081,7 +2088,7 @@ dashboard_df <- final_data_viz %>%
     Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
   ) %>%
   mutate(Sleep_Duration = format_hours_minutes(Sleep_Duration)) %>%
-  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR, Sleep_Duration) %>%
+  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Avg_Rel_Hum, Avg_Abs_Hum, Sleep_Score, HRV, RHR, Sleep_Duration, Outlier_Reason) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
 
