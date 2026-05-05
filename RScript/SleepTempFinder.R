@@ -122,6 +122,54 @@ if (is.null(plot_cfg)) plot_cfg <- list()
 # matching padding in minutes (expand bedtime..waketime by this amount each side)
 matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.integer(config$matching_padding_minutes) else 0
 
+default_analysis_metrics <- c(
+  "Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD",
+  "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR",
+  "Sleep_Duration"
+)
+
+normalize_analysis_metrics <- function(cfg) {
+  cfg <- cfg %||% list()
+  enabled <- cfg$enabled
+  if (!is.null(enabled) && length(enabled) > 0) {
+    if (is.list(enabled) || is.vector(enabled)) {
+      enabled_vec <- unlist(enabled)
+      if (!is.null(names(enabled_vec))) {
+        selected <- names(enabled_vec)[as.logical(enabled_vec)]
+        selected <- selected[!is.na(selected) & selected != ""]
+        return(unique(selected))
+      }
+      enabled <- trimws(enabled)
+      enabled <- enabled[enabled != ""]
+      if (length(enabled) > 0) {
+        return(unique(enabled))
+      }
+    }
+  }
+  metrics <- cfg$metrics
+  if (!is.null(metrics) && length(metrics) > 0) {
+    metrics <- unname(trimws(unlist(metrics)))
+    metrics <- metrics[metrics != ""]
+    if (length(metrics) > 0) {
+      return(unique(metrics))
+    }
+  }
+  # support direct boolean map at top-level of analysis_metrics
+  if (!is.null(names(cfg)) && length(cfg) > 0) {
+    bool_map <- unlist(cfg)
+    if (!is.null(names(bool_map))) {
+      selected <- names(bool_map)[as.logical(bool_map)]
+      selected <- selected[!is.na(selected) & selected != ""]
+      if (length(selected) > 0) {
+        return(unique(selected))
+      }
+    }
+  }
+  default_analysis_metrics
+}
+
+selected_metrics <- normalize_analysis_metrics(config$analysis_metrics)
+
 # summary interval for reported value ranges; default is 90% if config value missing or invalid
 summary_interval <- if (!is.null(config$summary_interval)) as.numeric(config$summary_interval) else NA_real_
 if (is.na(summary_interval) || summary_interval <= 0 || summary_interval >= 1) {
@@ -2027,7 +2075,7 @@ if (n_after_analysis_filter > 0) {
       format_val(q_bounds[[2]]))
     out
   }
-  stat_cols <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
+  stat_cols <- selected_metrics
   stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
   cat("\nStatistics for used nights:\n\n")
   print(stats_df)
@@ -2038,9 +2086,12 @@ if (n_after_analysis_filter > 0) {
 
 # --- Plot helper functions (extracted so the same logic can be called twice) ---
 # Define biomarker variables (sleep quality indicators)
-bio_vars <- c("Sleep_Score", "HRV", "RHR")
+bio_vars <- intersect(selected_metrics, c("Sleep_Score", "HRV", "RHR"))
+  if (length(bio_vars) == 0) {
+    warning("No selected bio metrics available for impact analysis; scatter and matrix plots will be skipped.")
+  }
 
-metric_list <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR")
+metric_list <- selected_metrics
 # derive labels/colors from configuration, with fallbacks
 metric_labels <- unname(sapply(metric_list, function(m) {
   plot_cfg$metric_labels[[m]] %||% m
@@ -2169,25 +2220,22 @@ dashboard_df <- final_data_viz %>%
     Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
   ) %>%
   mutate(Sleep_Duration = format_hours_minutes(Sleep_Duration)) %>%
-  select(Date, Sensor, Flags, Sensor_File, Avg_Temp, Temp_SD, Avg_Rel_Hum, Rel_Hum_SD, Avg_Abs_Hum, Abs_Hum_SD, Sleep_Score, HRV, RHR, Sleep_Duration, Outlier_Reason) %>%
+  select(Date, Sensor, Flags, Sensor_File, any_of(selected_metrics), Outlier_Reason) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
-
-
-
-# --- 5. IMPACT ANALYSIS & OPTIMA ---
-env_analysis_vars <- list(
-  "Room Temp" = list(col="Avg_Temp", unit="°C"), 
+all_env_analysis_vars <- list(
+  "Room Temp" = list(col="Avg_Temp", unit="°C"),
   "Room Temp SD" = list(col="Temp_SD", unit="°C"),
   "Rel Humidity" = list(col="Avg_Rel_Hum", unit="%"),
   "Rel Humidity SD" = list(col="Rel_Hum_SD", unit="%"),
   "Abs Humidity" = list(col="Avg_Abs_Hum", unit="g/m³"),
   "Abs Humidity SD" = list(col="Abs_Hum_SD", unit="g/m³")
 )
-optima_storage <- list()
+env_analysis_vars <- all_env_analysis_vars[sapply(all_env_analysis_vars, function(x) x$col %in% selected_metrics)]
+if (length(env_analysis_vars) == 0) {
+  warning("No environmental analysis metrics selected; impact analysis will be skipped.")
+}
 
-cat("\n                     SLEEP ANALYSIS\n")
-cat("===========================================================\n")
 for(env_name in names(env_analysis_vars)) {
   e_col <- env_analysis_vars[[env_name]]$col
   e_unit <- env_analysis_vars[[env_name]]$unit
@@ -2230,15 +2278,6 @@ cat("===========================================================\n")
 
 
 # --- 6. INDIVIDUAL TIMELINE PLOTS ---
-metric_list <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR")
-# derive labels/colors from configuration, with fallbacks
-metric_labels <- unname(sapply(metric_list, function(m) {
-  plot_cfg$metric_labels[[m]] %||% m
-}))
-metric_colors <- unname(sapply(metric_list, function(m) {
-  plot_cfg$metric_colors[[m]] %||% "black"
-}))
-
 for(i in seq_along(metric_list)) {
   m <- metric_list[i]
   p <- ggplot(final_data_viz, aes(x = Date, y = .data[[m]])) +

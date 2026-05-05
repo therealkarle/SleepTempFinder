@@ -200,6 +200,29 @@ analysis_filter:
   #     - "SleepScore>80 & HRV>50"
   expr: []
 
+# --- ANALYSIS METRICS ---
+# Select which metrics should appear in summary statistics, timelines,
+# and metric-driven analysis plots.
+# The preferred format is a boolean map of all available metrics.
+# When omitted, all default metrics are enabled.
+analysis_metrics:
+  enabled:
+    Avg_Temp: true
+    Temp_SD: true
+    Avg_Rel_Hum: true
+    Rel_Hum_SD: false
+    Avg_Abs_Hum: true
+    Abs_Hum_SD: false
+    Sleep_Score: true
+    HRV: true
+    RHR: true
+    Sleep_Duration: true
+  # compatibility: optionally provide a list of metric names instead
+  # metrics:
+  #   - Avg_Temp
+  #   - Sleep_Score
+  #   - HRV
+
 # --- OUTLIER FILTER ---
 # mode: false/manual/value_interval
 # If manual is used, thresholds are applied per metric and any night with
