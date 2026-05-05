@@ -2113,7 +2113,10 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
         theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
               plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
       save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
-      if(!dry_run) suppressWarnings(print(p))
+      if(!dry_run) {
+        suppressWarnings(print(p))
+        if (interactive()) try(graphics::dev.flush(), silent = TRUE)
+      }
     }, error = function(e) {
       warning(sprintf("Failed to create timeline plot for %s: %s\n", m, conditionMessage(e)))
     })
@@ -2140,15 +2143,22 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
             annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
         }
         save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
-        if(!dry_run) suppressWarnings(print(p))
+        if(!dry_run) {
+          suppressWarnings(print(p))
+          if (interactive()) try(graphics::dev.flush(), silent = TRUE)
+        }
       }, error = function(e) {
         warning(sprintf("Failed to create scatter plot for %s vs %s: %s\n", m, env_name, conditionMessage(e)))
       })
     }
   }
 
-  # 3x3 Matrix Dashboard - COLORED & WITH OPTIMA
-  matrix_plots <- list()
+  # Matrix Dashboard - ensure each row is one bio metric and each column is one environment metric
+  num_cols <- max(1, length(env_analysis_vars))
+  num_rows <- max(1, length(bio_vars))
+  matrix_plots <- vector("list", num_rows * num_cols)
+  plot_index <- 1
+
   for(m in bio_vars) {
     m_color <- metric_colors[match(m, metric_list)]
     for(env_name in names(env_analysis_vars)) {
@@ -2156,12 +2166,12 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       e_unit <- env_analysis_vars[[env_name]]$unit
       opt <- optima_storage[[paste0(env_name, "_", m)]]
 
-      tryCatch({
+      matrix_plots[[plot_index]] <- tryCatch({
         sub_mat <- data_matched %>% filter_outlier_rows_for_metric(e_col) %>% filter_outlier_rows_for_metric(m) %>%
           filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
         p_mat <- ggplot(sub_mat, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
-          theme_minimal(base_size = 8) + 
+          theme_minimal(base_size = 8) +
           labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
           theme(plot.title = element_text(size = 7, face = "bold"))
 
@@ -2169,25 +2179,28 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
           p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
         }
 
-        # Only add if plot object is valid
-        if(!is.null(p_mat) && inherits(p_mat, "ggplot")) {
-          matrix_plots[[length(matrix_plots) + 1]] <- p_mat
+        if(!is.null(p_mat) && inherits(p_mat, "ggplot")) p_mat else {
+          ggplot() + geom_blank() + theme_void() + labs(title = paste(m, "x", env_name, "(no data)"))
         }
       }, error = function(e) {
         warning(sprintf("Failed to create matrix plot for %s x %s: %s\n", m, env_name, conditionMessage(e)))
+        ggplot() + geom_blank() + theme_void() + labs(title = paste(m, "x", env_name, "(missing)"))
       })
+
+      plot_index <- plot_index + 1
     }
   }
   
   # Only render matrix dashboard if we have valid plots
   if(length(matrix_plots) > 0) {
     tryCatch({
-      matrix_dashboard <- gridExtra::arrangeGrob(grobs = matrix_plots, ncol = 3, top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2)))
-      save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 12, height = 9)
+      matrix_dashboard <- gridExtra::arrangeGrob(grobs = matrix_plots, ncol = num_cols, top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2)))
+      save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
       if(!dry_run) {
         tryCatch({
           suppressWarnings(grid::grid.newpage())
           suppressWarnings(grid::grid.draw(matrix_dashboard))
+          if (interactive()) try(graphics::dev.flush(), silent = TRUE)
         }, error = function(e) {
           warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
           # Attempt to save without rendering
@@ -2236,6 +2249,7 @@ if (length(env_analysis_vars) == 0) {
   warning("No environmental analysis metrics selected; impact analysis will be skipped.")
 }
 
+optima_storage <- list()
 for(env_name in names(env_analysis_vars)) {
   e_col <- env_analysis_vars[[env_name]]$col
   e_unit <- env_analysis_vars[[env_name]]$unit
