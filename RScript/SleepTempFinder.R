@@ -961,6 +961,12 @@ apply_outlier_filter <- function(df, outlier_cfg) {
         if (length(cols) == 0) return(NA_character_)
         paste(cols, collapse = ", ")
       }),
+      Self_Outlier_Columns = map(Outlier_Columns, function(cols) {
+        keep <- Filter(function(metric) {
+          (cfg$metric_actions[[metric]] %||% "exclude") == "self_only"
+        }, cols)
+        keep
+      }),
       Exclude_Night = map_lgl(Outlier_Columns, function(cols) {
         any(sapply(cols, function(metric) {
           (cfg$metric_actions[[metric]] %||% "exclude") == "exclude"
@@ -974,6 +980,12 @@ apply_outlier_filter <- function(df, outlier_cfg) {
        all = out %>% select(-Exclude_Night),
        excluded = unique(as.Date(excluded)),
        bounds = bounds)
+}
+
+filter_self_outlier_rows <- function(df, metric) {
+  if (is.null(df) || nrow(df) == 0) return(df)
+  if (!"Self_Outlier_Columns" %in% names(df)) return(df)
+  df %>% filter(!map_lgl(Self_Outlier_Columns, function(cols) metric %in% cols))
 }
 
 `%||%` <- function(x, y) {
@@ -1967,6 +1979,7 @@ if (n_after_analysis_filter > 0) {
   }
 
   summarize_metric <- function(df, col) {
+    df <- filter_self_outlier_rows(df, col)
     vals <- df[[col]]
     vals <- vals[!is.na(vals)]
     if (length(vals) == 0) {
@@ -2045,7 +2058,9 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
     for(m in bio_vars) {
       opt <- optima_storage[[paste0(env_name, "_", m)]]
       tryCatch({
-        p <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
+        sub <- data_matched %>% filter_self_outlier_rows(e_col) %>% filter_self_outlier_rows(m) %>%
+          filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
+        p <- ggplot(sub, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_point(alpha = 0.5, color = "darkgrey") +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
           labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
@@ -2072,7 +2087,9 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       opt <- optima_storage[[paste0(env_name, "_", m)]]
 
       tryCatch({
-        p_mat <- ggplot(data_matched, aes(x = .data[[e_col]], y = .data[[m]])) +
+        sub_mat <- data_matched %>% filter_self_outlier_rows(e_col) %>% filter_self_outlier_rows(m) %>%
+          filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
+        p_mat <- ggplot(sub_mat, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
           theme_minimal(base_size = 8) + 
           labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
@@ -2157,7 +2174,8 @@ for(env_name in names(env_analysis_vars)) {
   e_unit <- env_analysis_vars[[env_name]]$unit
   cat(sprintf("\n>>> IMPACT OF %s:\n", toupper(env_name)))
   for(m in bio_vars) {
-    sub <- final_data_matched %>% filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
+    sub <- final_data_matched %>% filter_self_outlier_rows(e_col) %>% filter_self_outlier_rows(m) %>%
+      filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
     if(nrow(sub) < 5) next
     
     sub_model <- sub
