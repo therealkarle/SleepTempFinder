@@ -214,17 +214,18 @@ analysis_filter:
 # The new `outlier_detection` section lists all metrics and sets whether they
 # are considered for exclusion, only marked, or ignored.
 #   true  -> exclude the night when this metric is an outlier
-#   self  -> mark the metric as outlier, but keep the night
+#   self  -> mark the metric as outlier, but keep the night for other metrics
+#   value -> like self, but also exclude related base metrics (e.g. Temp_SD affects Avg_Temp)
 #   false -> ignore this metric for outlier detection entirely
 outlier_filter:
   mode: value_interval
   outlier_detection:
-    Avg_Temp: self
-    Avg_Rel_Hum: self
-    Avg_Abs_Hum: self
+    Avg_Temp: true
+    Avg_Rel_Hum: value
+    Avg_Abs_Hum: value
     Temp_SD: true
-    Rel_Hum_SD: self
-    Abs_Hum_SD: self
+    Rel_Hum_SD: value
+    Abs_Hum_SD: value
     Sleep_Score: true
     HRV: true
     RHR: true
