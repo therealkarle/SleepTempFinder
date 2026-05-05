@@ -739,6 +739,23 @@ parse_outlier_threshold_value <- function(val, metric = NULL) {
   as.numeric(num_str)
 }
 
+parse_outlier_action <- function(action) {
+  if (is.logical(action)) {
+    return(ifelse(isTRUE(action), "exclude", "ignore"))
+  }
+  action <- tolower(as.character(action %||% "true"))
+  action <- switch(action,
+                   "true" = "exclude",
+                   "false" = "ignore",
+                   "self" = "self_only",
+                   action)
+  if (!action %in% c("exclude", "self_only", "ignore")) {
+    warning(sprintf("Unknown outlier action '%s'; defaulting to 'exclude'.", action))
+    action <- "exclude"
+  }
+  action
+}
+
 is_outlier_value <- function(value, min_val, max_val) {
   if (is.na(value)) return(FALSE)
   if (!is.na(min_val) && value < min_val) return(TRUE)
@@ -762,8 +779,10 @@ normalize_outlier_filter <- function(cfg) {
   }
 
   columns <- trim_vector(cfg$columns %||% character(0))
-  if (length(columns) == 0) {
-    columns <- outlier_metrics
+  metric_actions <- list()
+  detection_cfg <- cfg$outlier_detection %||% list()
+  for (metric in names(detection_cfg)) {
+    metric_actions[[metric]] <- parse_outlier_action(detection_cfg[[metric]])
   }
 
   if (mode == "manual") {
@@ -772,6 +791,9 @@ normalize_outlier_filter <- function(cfg) {
     for (metric in names(manual_cfg)) {
       metric_cfg <- manual_cfg[[metric]]
       if (!is.list(metric_cfg)) next
+      action <- parse_outlier_action(metric_cfg$action %||% detection_cfg[[metric]])
+      metric_actions[[metric]] <- action
+      if (action == "ignore") next
       min_val <- parse_outlier_threshold_value(metric_cfg$min, metric)
       max_val <- parse_outlier_threshold_value(metric_cfg$max, metric)
       if (!is.na(min_val) || !is.na(max_val)) {
@@ -779,7 +801,12 @@ normalize_outlier_filter <- function(cfg) {
       }
     }
     if (length(columns) == 0) columns <- names(bounds)
-    return(list(mode = "manual", columns = columns, manual_bounds = bounds, normalized = TRUE))
+    if (length(columns) == 0 && length(metric_actions) > 0) {
+      columns <- names(metric_actions)
+    }
+    columns <- columns[!(sapply(columns, function(metric) (metric_actions[[metric]] %||% "exclude") == "ignore"))]
+    return(list(mode = "manual", columns = columns, manual_bounds = bounds,
+                metric_actions = metric_actions, normalized = TRUE))
   }
 
   # value_interval
@@ -791,14 +818,21 @@ normalize_outlier_filter <- function(cfg) {
   global_min <- parse_outlier_threshold_value(vi_cfg$min)
   global_max <- parse_outlier_threshold_value(vi_cfg$max)
   metric_overrides <- vi_cfg$metrics %||% list()
+  for (metric in names(metric_overrides)) {
+    if (!is.list(metric_overrides[[metric]])) next
+    metric_actions[[metric]] <- parse_outlier_action(metric_overrides[[metric]]$action %||% detection_cfg[[metric]])
+  }
 
   if (length(columns) == 0) {
     if (use_individual && length(metric_overrides) > 0) {
       columns <- trim_vector(names(metric_overrides))
+    } else if (length(metric_actions) > 0) {
+      columns <- names(metric_actions)
     } else {
       columns <- outlier_metrics
     }
   }
+  columns <- columns[!(sapply(columns, function(metric) (metric_actions[[metric]] %||% "exclude") == "ignore"))]
 
   list(mode = "value_interval",
        columns = columns,
@@ -808,6 +842,7 @@ normalize_outlier_filter <- function(cfg) {
        global_min = global_min,
        global_max = global_max,
        metric_overrides = metric_overrides,
+       metric_actions = metric_actions,
        normalized = TRUE)
 }
 
@@ -861,6 +896,7 @@ compute_outlier_bounds <- function(df, outlier_cfg, metrics) {
 
   columns <- intersect(cfg$columns, names(df))
   if (length(columns) == 0) columns <- intersect(metrics, names(df))
+  columns <- columns[!(sapply(columns, function(metric) (cfg$metric_actions[[metric]] %||% "exclude") == "ignore"))]
   if (length(columns) == 0) return(list())
 
   bounds <- list()
@@ -882,6 +918,7 @@ compute_outlier_bounds <- function(df, outlier_cfg, metrics) {
                      use_individual = cfg$use_individual)
   for (metric in columns) {
     if (!metric %in% names(df) || !is.numeric(df[[metric]])) next
+    if ((cfg$metric_actions[[metric]] %||% "exclude") == "ignore") next
     metric_cfg <- if (isTRUE(cfg$use_individual)) cfg$metric_overrides[[metric]] %||% list() else list()
     probs <- resolve_value_interval_probs(metric_cfg, global_cfg)
     quantiles <- quantile(df[[metric]], probs = c(probs$lower, probs$upper), na.rm = TRUE, names = FALSE, type = 7)
@@ -923,13 +960,18 @@ apply_outlier_filter <- function(df, outlier_cfg) {
       Outlier_Reason = map_chr(Outlier_Columns, function(cols) {
         if (length(cols) == 0) return(NA_character_)
         paste(cols, collapse = ", ")
+      }),
+      Exclude_Night = map_lgl(Outlier_Columns, function(cols) {
+        any(sapply(cols, function(metric) {
+          (cfg$metric_actions[[metric]] %||% "exclude") == "exclude"
+        }))
       })
     )
 
-  excluded <- out %>% filter(map_int(Outlier_Columns, length) > 0) %>% pull(Date)
-  filtered <- out %>% filter(map_int(Outlier_Columns, length) == 0)
+  excluded <- out %>% filter(Exclude_Night) %>% pull(Date)
+  filtered <- out %>% filter(!Exclude_Night) %>% select(-Exclude_Night)
   list(data = filtered,
-       all = out,
+       all = out %>% select(-Exclude_Night),
        excluded = unique(as.Date(excluded)),
        bounds = bounds)
 }
@@ -1988,7 +2030,7 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
         theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
               plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
       save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
-      if(!dry_run) print(p)
+      if(!dry_run) suppressWarnings(print(p))
     }, error = function(e) {
       warning(sprintf("Failed to create timeline plot for %s: %s\n", m, conditionMessage(e)))
     })
@@ -2013,7 +2055,7 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
             annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
         }
         save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
-        if(!dry_run) print(p)
+        if(!dry_run) suppressWarnings(print(p))
       }, error = function(e) {
         warning(sprintf("Failed to create scatter plot for %s vs %s: %s\n", m, env_name, conditionMessage(e)))
       })
@@ -2057,8 +2099,8 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 12, height = 9)
       if(!dry_run) {
         tryCatch({
-          grid::grid.newpage()
-          grid::grid.draw(matrix_dashboard)
+          suppressWarnings(grid::grid.newpage())
+          suppressWarnings(grid::grid.draw(matrix_dashboard))
         }, error = function(e) {
           warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
           # Attempt to save without rendering

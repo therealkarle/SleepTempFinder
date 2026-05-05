@@ -203,20 +203,38 @@ analysis_filter:
 # --- OUTLIER FILTER ---
 # mode: false/manual/value_interval
 # If manual is used, thresholds are applied per metric and any night with
-# at least one outlier metric is removed from analysis.
+# at least one outlier metric is removed from analysis by default.
 # Sleep_Duration thresholds may be entered as "hh:mm" or as decimal hours
 # using comma or dot (e.g. "6,5" or "6.5").
 #
 # In value_interval mode, metric-specific `sym` values define the width of a
 # symmetric central interval of the distribution, e.g. `sym: 0.80` means the
 # middle 80% of values.
+#
+# The new `outlier_detection` section lists all metrics and sets whether they
+# are considered for exclusion, only marked, or ignored.
+#   true  -> exclude the night when this metric is an outlier
+#   self  -> mark the metric as outlier, but keep the night
+#   false -> ignore this metric for outlier detection entirely
 outlier_filter:
   mode: value_interval
+  outlier_detection:
+    Avg_Temp: self
+    Avg_Rel_Hum: self
+    Avg_Abs_Hum: self
+    Temp_SD: true
+    Rel_Hum_SD: self
+    Abs_Hum_SD: self
+    Sleep_Score: true
+    HRV: true
+    RHR: true
+    Sleep_Duration: true
   manual:
     metrics:
       Avg_Temp:
         min: 15
         max: 27
+        # action: true | self | false
       Avg_Rel_Hum:
         min: 30
         max: 60
@@ -287,6 +305,7 @@ outlier_filter:
         sym: 0.95
         min: 0.05
         max: 0.95
+        # action: exclude | self_only | ignore
       Sleep_Duration:
         sym: 0.98
         min: 0.10
