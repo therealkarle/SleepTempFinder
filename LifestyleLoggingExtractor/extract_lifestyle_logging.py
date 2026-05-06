@@ -136,12 +136,35 @@ def parse_date_field(value):
         return None
 
 
+def find_daily_log_list(data):
+    if isinstance(data, dict):
+        if 'dailyLogList' in data and isinstance(data['dailyLogList'], list):
+            return data['dailyLogList']
+        for value in data.values():
+            found = find_daily_log_list(value)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and 'dailyLogList' in item and isinstance(item['dailyLogList'], list):
+                return item['dailyLogList']
+            found = find_daily_log_list(item)
+            if found is not None:
+                return found
+    return None
+
+
 def normalize_daily_logs(data):
+    daily_logs = None
     if isinstance(data, dict) and 'dailyLogList' in data:
         daily_logs = data['dailyLogList']
-    elif isinstance(data, list):
-        daily_logs = data
     else:
+        daily_logs = find_daily_log_list(data)
+
+    if daily_logs is None and isinstance(data, list):
+        daily_logs = data
+
+    if daily_logs is None:
         raise ValueError('Unable to locate dailyLogList in the LifestyleLogging JSON.')
 
     rows = defaultdict(dict)
@@ -151,14 +174,17 @@ def normalize_daily_logs(data):
         if not isinstance(entry, dict):
             continue
 
-        date_value = entry.get('calendarDate') or entry.get('date')
+        date_value = entry.get('calendarDate') or entry.get('date') or entry.get('logDate')
         row_date = parse_date_field(date_value)
         if row_date is None:
             continue
 
         behavior_name = normalize_behavior_name(
-            entry.get('behaviourName') or entry.get('behaviorName') or entry.get('name')
+            entry.get('behaviourName') or entry.get('behaviorName') or entry.get('name') or entry.get('label')
         )
+        if behavior_name == 'unknown':
+            continue
+
         status = entry.get('status')
         if status is None:
             status = entry.get('value')
