@@ -37,3 +37,7 @@ RScript/config.private.yaml
 
 #Outputs
 PlotOutput/
+
+
+#PrivatData
+GarminUserData/
