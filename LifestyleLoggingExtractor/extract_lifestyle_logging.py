@@ -204,8 +204,6 @@ def build_output_path(output_arg, json_filename, rows):
         if output_path.exists() and output_path.is_dir():
             filename = build_default_filename(json_filename, rows)
             return output_path / filename
-        if output_path.suffix.lower() == '.csv':
-            return output_path
         return output_path
 
     return Path(__file__).resolve().parent / 'Out' / build_default_filename(json_filename, rows)
@@ -220,8 +218,26 @@ def build_default_filename(json_filename, rows):
     return f'{latest_date}_{garmin_number}_LifestyleLogging.csv'
 
 
+def ensure_unique_path(path: Path) -> Path:
+    candidate = path
+    if not candidate.exists():
+        return candidate
+
+    parent = candidate.parent
+    stem = candidate.stem
+    suffix = candidate.suffix
+    counter = 1
+
+    while True:
+        numbered = parent / f'{stem}({counter}){suffix}'
+        if not numbered.exists():
+            return numbered
+        counter += 1
+
+
 def write_csv(output_path: Path, rows, behavior_names):
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = ensure_unique_path(output_path)
     sorted_dates = sorted(rows.keys())
 
     with output_path.open('w', newline='', encoding='utf-8') as handle:
