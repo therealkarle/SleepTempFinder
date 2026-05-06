@@ -34,4 +34,6 @@ python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input GarminUser
 python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04/DI_CONNECT/DI-Connect-Wellness/108826033_LifestyleLogging.json
 python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input export.zip
 python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input export.zip --output results.csv
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04 --output LifestyleLogging.csv
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04 --output C:\Users\flori\Downloads
 ```
