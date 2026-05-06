@@ -5,7 +5,7 @@ Dieses kleine Python-Skript extrahiert das Garmin `LifestyleLogging.json` aus ei
 ## Nutzung
 
 ```sh
-python LifestyleLogingExtractor/extract_lifestyle_logging.py --input <path> [--output <output.csv>]
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input <path> [--output <output.csv>]
 ```
 
 ### Eingabeoptionen
@@ -19,7 +19,7 @@ python LifestyleLogingExtractor/extract_lifestyle_logging.py --input <path> [--o
 
 - `--output` / `-o`:
   - Optionaler Zielpfad für die CSV-Datei
-  - Wird kein Pfad angegeben, wird die Datei im Ordner `LifestyleLogingExtractor/Out/` abgelegt
+  - Wird kein Pfad angegeben, wird die Datei im Ordner `LifestyleLoggingExtractor/Out/` abgelegt
   - Standarddateiname: `YYYY-MM-DD_<garminnumber>_LifestyleLogging.csv`
 
 ## Dateien
@@ -30,8 +30,8 @@ python LifestyleLogingExtractor/extract_lifestyle_logging.py --input <path> [--o
 ## Beispiele
 
 ```sh
-python LifestyleLogingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04
-python LifestyleLogingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04/DI_CONNECT/DI-Connect-Wellness/108826033_LifestyleLogging.json
-python LifestyleLogingExtractor/extract_lifestyle_logging.py --input export.zip
-python LifestyleLogingExtractor/extract_lifestyle_logging.py --input export.zip --output results.csv
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input GarminUserData/2026.04/DI_CONNECT/DI-Connect-Wellness/108826033_LifestyleLogging.json
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input export.zip
+python LifestyleLoggingExtractor/extract_lifestyle_logging.py --input export.zip --output results.csv
 ```
