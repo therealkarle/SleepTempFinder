@@ -14,6 +14,22 @@ script_path <- get_script_path()
 script_dir <- if (!is.null(script_path)) dirname(script_path) else getwd()
 source(file.path(script_dir, "SleepTempFinder_shared.R"))
 
+load_meta_config <- function(script_dir) {
+  cfg_path <- file.path(script_dir, "config.meta.yaml")
+  private_path <- file.path(script_dir, "config.meta.private.yaml")
+  meta_cfg <- list()
+  if (file.exists(cfg_path)) {
+    meta_cfg <- read_yaml(cfg_path)
+  }
+  if (file.exists(private_path)) {
+    private_cfg <- read_yaml(private_path)
+    for (k in names(private_cfg)) meta_cfg[[k]] <- private_cfg[[k]]
+  }
+  meta_cfg
+}
+
+meta_cfg <- load_meta_config(script_dir)
+
 args <- commandArgs(trailingOnly = TRUE)
 cli_lifestyle <- NULL
 dry_run <- FALSE
@@ -34,14 +50,15 @@ config_data_dir <- resolve_path(config$data_directory %||% "../data")
 if (!dir.exists(config_data_dir)) stop(sprintf("Data directory not found: %s", config_data_dir))
 
 message("Loading lifestyle data...")
-lifestyle_raw <- load_lifestyle_data(cli_lifestyle)
+lifestyle_raw <- load_lifestyle_data(cli_lifestyle, meta_cfg)
 if (nrow(lifestyle_raw) == 0) stop("Lifestyle dataset is empty.")
-if (!"date" %in% names(lifestyle_raw)) stop("Lifestyle CSV must contain a 'date' column.")
+if (!(meta_cfg$lifestyle$csv_date_col %||% "date") %in% names(lifestyle_raw)) stop(sprintf("Lifestyle CSV must contain a '%s' column.", meta_cfg$lifestyle$csv_date_col %||% "date"))
 
+date_col <- meta_cfg$lifestyle$csv_date_col %||% "date"
 lifestyle_df <- lifestyle_raw %>%
-  mutate(Date = as.Date(date)) %>%
-  select(-date) %>%
-  build_lifestyle_features()
+  mutate(Date = as.Date(!!sym(date_col))) %>%
+  select(-all_of(date_col)) %>%
+  build_lifestyle_features(meta_cfg)
 
 message(sprintf("Lifestyle rows loaded: %d", nrow(lifestyle_df)))
 

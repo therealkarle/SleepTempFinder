@@ -477,26 +477,44 @@ safe_bool <- function(x) {
 
 # Converts strings like "Displays 30min vor dem Schlafen aus" into a basic
 # named list with logical values.
-build_lifestyle_features <- function(lifestyle_df) {
+build_lifestyle_features <- function(lifestyle_df, meta_cfg = NULL) {
   fields <- names(lifestyle_df)
+  bool_labels <- list(
+    Display_30min_off = "Displays 30min vor dem Schlafen aus",
+    Display_1h_off = "Displays eine H vor dem Schlafen aus",
+    Traveling_Vacation = "Traveling/Vacation",
+    Late_Meals = "Late Meals",
+    Heavy_Meals = "Heavy Meals",
+    Window_Open = "Fenster offen beim Schlafen",
+    Sleep_Sounds = "Sleep Sounds",
+    Light_Exercise = "Light Exercise",
+    Moderate_Exercise = "Moderate Exercise",
+    Vigorous_Exercise = "Vigorous Exercise",
+    Light_Exercise_Before_Bed = "Light Exercise Before Bed",
+    Moderate_Exercise_Before_Bed = "Moderate Exercise Before Bed",
+    Vigorous_Exercise_Before_Bed = "Vigorous Exercise Before Bed"
+  )
+  if (!is.null(meta_cfg$lifestyle$columns)) {
+    bool_labels <- modifyList(bool_labels, meta_cfg$lifestyle$columns)
+  }
   has_col <- function(name) any(name == fields)
   bool_col <- function(name) {
     if (has_col(name)) safe_bool(lifestyle_df[[name]]) else rep(FALSE, nrow(lifestyle_df))
   }
   lifestyle_df <- lifestyle_df %>% mutate(
-    Display_30min_off = bool_col("Displays 30min vor dem Schlafen aus"),
-    Display_1h_off = bool_col("Displays eine H vor dem Schlafen aus"),
-    Traveling_Vacation = bool_col("Traveling/Vacation"),
-    Late_Meals = bool_col("Late Meals"),
-    Heavy_Meals = bool_col("Heavy Meals"),
-    Window_Open = bool_col("Fenster offen beim Schlafen"),
-    Sleep_Sounds = bool_col("Sleep Sounds"),
-    Light_Exercise = bool_col("Light Exercise"),
-    Moderate_Exercise = bool_col("Moderate Exercise"),
-    Vigorous_Exercise = bool_col("Vigorous Exercise"),
-    Light_Exercise_Before_Bed = bool_col("Light Exercise Before Bed"),
-    Moderate_Exercise_Before_Bed = bool_col("Moderate Exercise Before Bed"),
-    Vigorous_Exercise_Before_Bed = bool_col("Vigorous Exercise Before Bed")
+    Display_30min_off = bool_col(bool_labels$Display_30min_off),
+    Display_1h_off = bool_col(bool_labels$Display_1h_off),
+    Traveling_Vacation = bool_col(bool_labels$Traveling_Vacation),
+    Late_Meals = bool_col(bool_labels$Late_Meals),
+    Heavy_Meals = bool_col(bool_labels$Heavy_Meals),
+    Window_Open = bool_col(bool_labels$Window_Open),
+    Sleep_Sounds = bool_col(bool_labels$Sleep_Sounds),
+    Light_Exercise = bool_col(bool_labels$Light_Exercise),
+    Moderate_Exercise = bool_col(bool_labels$Moderate_Exercise),
+    Vigorous_Exercise = bool_col(bool_labels$Vigorous_Exercise),
+    Light_Exercise_Before_Bed = bool_col(bool_labels$Light_Exercise_Before_Bed),
+    Moderate_Exercise_Before_Bed = bool_col(bool_labels$Moderate_Exercise_Before_Bed),
+    Vigorous_Exercise_Before_Bed = bool_col(bool_labels$Vigorous_Exercise_Before_Bed)
   )
   lifestyle_df <- lifestyle_df %>% mutate(
     Exercise_Level = case_when(
@@ -520,8 +538,9 @@ build_lifestyle_features <- function(lifestyle_df) {
   )
 }
 
-find_lifestyle_csv <- function(lifestyle_path = NULL) {
-  out_dir <- normalizePath(file.path(script_directory, "..", "LifestyleLoggingExtractor", "Out"), winslash = "/", mustWork = FALSE)
+find_lifestyle_csv <- function(lifestyle_path = NULL, meta_cfg = NULL) {
+  party_dir <- meta_cfg$lifestyle$default_lifestyle_dir %||% file.path(script_directory, "..", "LifestyleLoggingExtractor", "Out")
+  out_dir <- normalizePath(party_dir, winslash = "/", mustWork = FALSE)
   files <- character(0)
   if (dir.exists(out_dir)) {
     files <- list.files(out_dir, pattern = "_LifestyleLogging\\.csv$", full.names = TRUE)
@@ -539,10 +558,10 @@ find_lifestyle_csv <- function(lifestyle_path = NULL) {
   NA_character_
 }
 
-extract_lifestyle_from_raw <- function(raw_path) {
+extract_lifestyle_from_raw <- function(raw_path, meta_cfg = NULL) {
   python_exec <- Sys.which("python")
   if (python_exec == "") stop("Python not found in PATH. Please install Python or activate your environment.")
-  extractor <- normalizePath(file.path(script_directory, "..", "LifestyleLoggingExtractor", "extract_lifestyle_logging.py"), winslash = "/", mustWork = TRUE)
+  extractor <- normalizePath(meta_cfg$model$raw_extractor_script %||% file.path(script_directory, "..", "LifestyleLoggingExtractor", "extract_lifestyle_logging.py"), winslash = "/", mustWork = TRUE)
   output_path <- file.path(tempdir(), "SleepMetaModel_lifestyle.csv")
   if (file.exists(output_path)) file.remove(output_path)
   args <- c(extractor, "--input", normalizePath(raw_path, winslash = "/", mustWork = FALSE), "--output", output_path)
@@ -553,8 +572,8 @@ extract_lifestyle_from_raw <- function(raw_path) {
   output_path
 }
 
-load_lifestyle_data <- function(lifestyle_path = NULL) {
-  candidate <- find_lifestyle_csv(lifestyle_path)
+load_lifestyle_data <- function(lifestyle_path = NULL, meta_cfg = NULL) {
+  candidate <- find_lifestyle_csv(lifestyle_path, meta_cfg)
   if (!is.na(candidate)) {
     return(read_csv(candidate, col_types = cols(.default = col_character())))
   }
@@ -577,7 +596,7 @@ load_lifestyle_data <- function(lifestyle_path = NULL) {
   if (ext == "csv") {
     read_csv(candidate, col_types = cols(.default = col_character()))
   } else if (ext %in% c("json", "zip") || dir.exists(candidate)) {
-    extracted <- extract_lifestyle_from_raw(candidate)
+    extracted <- extract_lifestyle_from_raw(candidate, meta_cfg)
     read_csv(extracted, col_types = cols(.default = col_character()))
   } else {
     stop(sprintf("Unsupported lifestyle path type: %s", candidate))

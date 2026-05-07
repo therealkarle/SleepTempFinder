@@ -1,0 +1,50 @@
+# Meta-model configuration for SleepMetaModel.R
+# This file is intentionally separate from SleepTempFinder main config to
+# keep the meta-regression workflow independent.
+
+lifestyle:
+  # directory where extracted LifestyleLogging CSVs are stored or discovered
+  default_lifestyle_dir: "../LifestyleLoggingExtractor/Out"
+  # column name containing the date for each lifestyle entry
+  csv_date_col: "date"
+  # override raw lifestyle boolean labels if the CSV uses a different wording
+  columns:
+    Display_30min_off: "Displays 30min vor dem Schlafen aus"
+    Display_1h_off: "Displays eine H vor dem Schlafen aus"
+    Traveling_Vacation: "Traveling/Vacation"
+    Late_Meals: "Late Meals"
+    Heavy_Meals: "Heavy Meals"
+    Window_Open: "Fenster offen beim Schlafen"
+    Sleep_Sounds: "Sleep Sounds"
+    Light_Exercise: "Light Exercise"
+    Moderate_Exercise: "Moderate Exercise"
+    Vigorous_Exercise: "Vigorous Exercise"
+    Light_Exercise_Before_Bed: "Light Exercise Before Bed"
+    Moderate_Exercise_Before_Bed: "Moderate Exercise Before Bed"
+    Vigorous_Exercise_Before_Bed: "Vigorous Exercise Before Bed"
+
+model:
+  # path to the raw lifestyle extractor script; can be overridden in private config
+  raw_extractor_script: "../LifestyleLoggingExtractor/extract_lifestyle_logging.py"
+  # optional raw Garmin lifestyle source paths or directories can be passed explicitly
+
+meta:
+  outcome_variables:
+    - Sleep_Score
+    - RHR
+    - Skin_Temperature
+    - HRV
+  factor_columns:
+    - Display_30min_off
+    - Display_1h_off
+    - Traveling_Vacation
+    - Late_Meals
+    - Heavy_Meals
+    - Window_Open
+    - Sleep_Sounds
+    - Light_Exercise
+    - Moderate_Exercise
+    - Vigorous_Exercise
+    - Light_Exercise_Before_Bed
+    - Moderate_Exercise_Before_Bed
+    - Vigorous_Exercise_Before_Bed

@@ -1,0 +1,10 @@
+# Private overrides for meta-model settings.
+# Copy this file to config.meta.private.yaml and customize only the
+# fields you need to override, such as local extraction paths.
+
+model:
+  raw_extractor_script: "../LifestyleLoggingExtractor/extract_lifestyle_logging.py"
+
+lifestyle:
+  default_lifestyle_dir: "../LifestyleLoggingExtractor/Out"
+  csv_date_col: "date"
