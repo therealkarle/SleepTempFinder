@@ -181,9 +181,17 @@ selected_metrics <- c("Sleep_Score", "RHR", "HRV", "Sleep_Duration")
 missing_metrics <- setdiff(selected_metrics, names(final_joined))
 if (length(missing_metrics) > 0) stop(sprintf("Required metrics missing: %s", paste(missing_metrics, collapse = ", ")))
 
-predictor_vars <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD",
-                    "Display_30min_off", "Display_1h_off", "Exercise_Level", "Traveling_Vacation",
-                    "Late_Meals", "Window_Open")
+base_predictors <- meta_cfg$meta$base_predictors %||% c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD")
+factor_columns <- meta_cfg$meta$factor_columns %||% c(
+  "Display_30min_off", "Display_1h_off", "Display_Off_Level", "Exercise_Level", "Traveling_Vacation",
+  "Late_Meals", "Window_Open"
+)
+interaction_terms <- meta_cfg$meta$interaction_terms %||% c(
+  "Avg_Temp:Display_30min_off", "Avg_Temp:Exercise_Level", "Display_1h_off:Exercise_Level"
+)
+meta_interaction_terms <- meta_cfg$meta$meta_interaction_terms %||% c(
+  "Outcome:Avg_Temp", "Outcome:Display_Off_Level", "Outcome:Exercise_Level"
+)
 
 final_model_data <- final_joined %>%
   mutate(
@@ -192,14 +200,14 @@ final_model_data <- final_joined %>%
     Traveling_Vacation = ifelse(is.na(Traveling_Vacation), FALSE, Traveling_Vacation),
     Late_Meals = ifelse(is.na(Late_Meals), FALSE, Late_Meals),
     Window_Open = ifelse(is.na(Window_Open), FALSE, Window_Open),
-    Exercise_Level = factor(Exercise_Level, levels = c("none", "light", "moderate", "vigorous")),
-    Display_Before_Bed = factor(Display_Before_Bed, levels = c("none", "30min", "1h"))
+    Exercise_Level = factor(ifelse(is.na(Exercise_Level), "none", Exercise_Level), levels = c("none", "light", "moderate", "vigorous")),
+    Display_Before_Bed = factor(ifelse(is.na(Display_Before_Bed), "none", Display_Before_Bed), levels = c("none", "30min", "1h")),
+    Display_Off_Level = factor(ifelse(is.na(Display_Off_Level), "none", Display_Off_Level), levels = c("none", "30min", "1h"))
   )
 
 fit_outcome_model <- function(outcome, data) {
-  formula <- as.formula(paste0(outcome, " ~ Avg_Temp + Temp_SD + Avg_Rel_Hum + Rel_Hum_SD + Avg_Abs_Hum + Abs_Hum_SD + ",
-                              "Display_30min_off + Display_1h_off + Exercise_Level + Traveling_Vacation + Late_Meals + Window_Open + ",
-                              "Avg_Temp:Display_30min_off + Avg_Temp:Exercise_Level + Display_1h_off:Exercise_Level"))
+  formula_terms <- c(base_predictors, factor_columns, interaction_terms)
+  formula <- as.formula(paste0(outcome, " ~ ", paste(formula_terms, collapse = " + ")))
   lm(formula, data = data)
 }
 
@@ -222,18 +230,20 @@ for (metric in names(models)) {
 }
 
 message("\n===== Meta-Model =====")
+meta_predictors <- c(base_predictors, factor_columns)
 meta_data <- final_model_data %>%
-  select(Date, all_of(selected_metrics), Avg_Temp, Temp_SD, Avg_Rel_Hum, Rel_Hum_SD, Avg_Abs_Hum, Abs_Hum_SD,
-         Display_30min_off, Display_1h_off, Exercise_Level, Traveling_Vacation, Late_Meals, Window_Open) %>%
+  select(Date, all_of(selected_metrics), all_of(meta_predictors)) %>%
   pivot_longer(cols = all_of(selected_metrics), names_to = "Outcome", values_to = "Value") %>%
   filter(!is.na(Value))
 if (nrow(meta_data) < 20) {
   warning("Not enough data for meta-modeling.\n")
 } else {
-  meta_model <- lm(Value ~ Outcome + Avg_Temp + Temp_SD + Avg_Rel_Hum + Rel_Hum_SD + Avg_Abs_Hum + Abs_Hum_SD + 
-                    Display_30min_off + Display_1h_off + Exercise_Level + Traveling_Vacation + Late_Meals + Window_Open + 
-                    Outcome:(Avg_Temp + Temp_SD + Display_30min_off + Exercise_Level),
-                  data = meta_data)
+  meta_formula <- paste0(
+    "Value ~ Outcome + ",
+    paste(meta_predictors, collapse = " + "),
+    if (length(meta_interaction_terms) > 0) paste0(" + ", paste(meta_interaction_terms, collapse = " + ")) else ""
+  )
+  meta_model <- lm(as.formula(meta_formula), data = meta_data)
   print(glance(meta_model))
   print(tidy(meta_model))
 }

@@ -531,11 +531,55 @@ build_lifestyle_features <- function(lifestyle_df, meta_cfg = NULL) {
       Display_30min_off ~ "30min",
       TRUE ~ "none"
     )
-  )
-  lifestyle_df %>% mutate(
-    Exercise_Level = factor(Exercise_Level, levels = c("none", "light", "moderate", "vigorous")),
-    Display_Before_Bed = factor(Display_Before_Bed, levels = c("none", "30min", "1h"))
-  )
+  ) %>%
+    apply_derived_lifestyle_factors(meta_cfg)
+}
+
+apply_derived_lifestyle_factors <- function(lifestyle_df, meta_cfg = NULL) {
+  derived_defs <- meta_cfg$meta$derived_factors
+  if (is.null(derived_defs) || length(derived_defs) == 0) return(lifestyle_df)
+
+  for (def in derived_defs) {
+    name <- def$name %||% NA_character_
+    levels <- def$levels
+    if (is.null(name) || name == "" || is.null(levels) || !is.list(levels)) next
+
+    row_values <- rep(0L, nrow(lifestyle_df))
+    level_names <- sort(as.integer(names(levels)))
+    for (lvl in level_names) {
+      references <- levels[[as.character(lvl)]]
+      if (is.character(references)) {
+        references <- list(references)
+      }
+      if (is.list(references) || is.vector(references)) {
+        refs <- unlist(references)
+        valid_refs <- refs[refs %in% names(lifestyle_df)]
+        if (length(valid_refs) == 0) {
+          warning(sprintf("Derived lifestyle factor '%s' level %s references no known fields: %s", name, lvl, paste(refs, collapse = ", ")))
+          next
+        }
+        row_match <- rep(FALSE, nrow(lifestyle_df))
+        for (ref in valid_refs) {
+          row_match <- row_match | safe_bool(lifestyle_df[[ref]])
+        }
+        row_values <- ifelse(row_match & lvl > row_values, lvl, row_values)
+      } else if (is.character(references) && toupper(references) == "TRUE") {
+        row_values <- ifelse(lvl > row_values, lvl, row_values)
+      } else {
+        warning(sprintf("Derived lifestyle factor '%s' references unsupported type for level %s", name, lvl))
+      }
+    }
+
+    labels <- def$labels
+    if (is.null(labels)) {
+      labels <- setNames(as.character(level_names), as.character(level_names))
+    }
+
+    label_levels <- as.integer(names(labels))
+    lifestyle_df[[name]] <- factor(row_values, levels = label_levels, labels = unname(labels))
+  }
+
+  lifestyle_df
 }
 
 find_lifestyle_csv <- function(lifestyle_path = NULL, meta_cfg = NULL) {
