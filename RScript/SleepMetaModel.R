@@ -163,6 +163,12 @@ sleep_rows <- sleep_complete %>%
 
 if (nrow(sleep_rows) == 0) stop("No complete sleep nights available after initial filtering.")
 
+if (any(duplicated(sleep_rows$Date))) {
+  dup_dates <- sleep_rows %>% count(Date) %>% filter(n > 1) %>% pull(Date)
+  warning(sprintf("Duplicate sleep rows detected for dates: %s", paste(format(dup_dates, "%Y-%m-%d"), collapse = ", ")))
+  sleep_rows <- sleep_rows %>% arrange(Date) %>% distinct(Date, .keep_all = TRUE)
+}
+
 sensor_rows <- map_dfr(seq_len(nrow(sleep_rows)), function(i) {
   compute_nightly_sensor_summary(sleep_rows[i, ], sensor_raw, default_sensor_id, config$matching_padding_minutes %||% 30)
 })
@@ -205,9 +211,38 @@ final_model_data <- final_joined %>%
     Display_Off_Level = factor(ifelse(is.na(Display_Off_Level), "none", Display_Off_Level), levels = c("none", "30min", "1h"))
   )
 
+valid_predictor_terms <- function(data, terms) {
+  terms[sapply(terms, function(term) {
+    if (!(term %in% names(data))) return(FALSE)
+    col <- data[[term]]
+    non_na <- col[!is.na(col)]
+    if (length(non_na) == 0) return(FALSE)
+    if (is.factor(col) || is.character(col) || is.logical(col)) {
+      n_distinct(non_na) > 1
+    } else if (is.numeric(col)) {
+      length(unique(non_na)) > 1 && var(non_na, na.rm = TRUE) > 0
+    } else {
+      n_distinct(non_na) > 1
+    }
+  })]
+}
+
+valid_interaction_terms <- function(data, terms, allowed_terms) {
+  terms[sapply(terms, function(term) {
+    parts <- str_split(term, ":", simplify = TRUE)
+    all(parts %in% allowed_terms)
+  })]
+}
+
 fit_outcome_model <- function(outcome, data) {
-  formula_terms <- c(base_predictors, factor_columns, interaction_terms)
-  formula <- as.formula(paste0(outcome, " ~ ", paste(formula_terms, collapse = " + ")))
+  main_terms <- valid_predictor_terms(data, c(base_predictors, factor_columns))
+  interaction_terms_filtered <- valid_interaction_terms(data, interaction_terms, main_terms)
+  formula_terms <- c(main_terms, interaction_terms_filtered)
+  if (length(formula_terms) == 0) {
+    formula <- as.formula(paste0(outcome, " ~ 1"))
+  } else {
+    formula <- as.formula(paste0(outcome, " ~ ", paste(formula_terms, collapse = " + ")))
+  }
   lm(formula, data = data)
 }
 
@@ -238,10 +273,12 @@ meta_data <- final_model_data %>%
 if (nrow(meta_data) < 20) {
   warning("Not enough data for meta-modeling.\n")
 } else {
+  valid_meta_preds <- valid_predictor_terms(meta_data, meta_predictors)
+  valid_meta_interactions <- valid_interaction_terms(meta_data, meta_interaction_terms, c("Outcome", valid_meta_preds))
   meta_formula <- paste0(
-    "Value ~ Outcome + ",
-    paste(meta_predictors, collapse = " + "),
-    if (length(meta_interaction_terms) > 0) paste0(" + ", paste(meta_interaction_terms, collapse = " + ")) else ""
+    "Value ~ Outcome",
+    if (length(valid_meta_preds) > 0) paste0(" + ", paste(valid_meta_preds, collapse = " + ")) else "",
+    if (length(valid_meta_interactions) > 0) paste0(" + ", paste(valid_meta_interactions, collapse = " + ")) else ""
   )
   meta_model <- lm(as.formula(meta_formula), data = meta_data)
   print(glance(meta_model))

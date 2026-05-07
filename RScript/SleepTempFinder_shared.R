@@ -64,6 +64,12 @@ trim_vector <- function(x) {
   x[x != "" & !is.na(x)]
 }
 
+collapse_flags <- function(x) {
+  vals <- sort(unique(trim_vector(x)))
+  if (length(vals) == 0) return(NA_character_)
+  paste(vals, collapse = ", ")
+}
+
 is_absolute_path <- function(path_value) {
   grepl("^(?:[A-Za-z]:[\\/]|/)", path_value, perl = TRUE)
 }
@@ -327,12 +333,11 @@ parse_ics_time <- function(value) {
 unescape_ics <- function(val) {
   if (is.na(val)) return(val)
   out <- val
-  out <- str_replace_all(out, "\\\
-", "\n")
-  out <- str_replace_all(out, "\\N", "\n")
-  out <- str_replace_all(out, "\\,", ",")
-  out <- str_replace_all(out, "\\;", ";")
-  out <- str_replace_all(out, "\\\\", "\\")
+  out <- str_replace_all(out, fixed("\\n"), "\n")
+  out <- str_replace_all(out, fixed("\\N"), "\n")
+  out <- str_replace_all(out, fixed("\\,"), ",")
+  out <- str_replace_all(out, fixed("\\;"), ";")
+  out <- str_replace_all(out, fixed("\\\\"), "\\")
   out
 }
 
