@@ -1004,13 +1004,13 @@ apply_outlier_filter <- function(df, outlier_cfg) {
   cfg <- normalize_outlier_filter(outlier_cfg)
   if (cfg$mode == "false" || nrow(df) == 0) {
     out <- df %>% mutate(Outlier_Columns = list(character(0)), Outlier_Reason = NA_character_)
-    return(list(data = out, excluded = as.Date(character(0)), bounds = list()))
+    return(list(data = out, all = out, excluded = as.Date(character(0)), bounds = list()))
   }
 
   bounds <- compute_outlier_bounds(df, cfg, outlier_metrics)
   if (length(bounds) == 0) {
     out <- df %>% mutate(Outlier_Columns = list(character(0)), Outlier_Reason = NA_character_)
-    return(list(data = out, excluded = as.Date(character(0)), bounds = bounds))
+    return(list(data = out, all = out, excluded = as.Date(character(0)), bounds = bounds))
   }
 
   out <- df %>%
@@ -2214,7 +2214,14 @@ dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
   select(-any_of(c("Outlier_Columns", "Outlier_Reason"))) %>%
   # Attach any outlier metadata for the day, if available.
-  left_join(select(final_data_outlier_meta, Date, Outlier_Reason), by = "Date") %>%
+  left_join(
+    if (is.null(final_data_outlier_meta) || nrow(final_data_outlier_meta) == 0) {
+      tibble(Date = as.Date(character()), Outlier_Reason = character())
+    } else {
+      select(final_data_outlier_meta, Date, Outlier_Reason)
+    },
+    by = "Date"
+  ) %>%
   # Sensor_Files is a list-column; convert to semicolon-separated string for
   # ease of display.  Use Sensor_Names if you prefer canonical names instead.
   mutate(
