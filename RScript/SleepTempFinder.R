@@ -286,7 +286,11 @@ reset_graphics_environment <- function() {
     if (is.null(open_devices) || length(open_devices) == 0L) {
       return(invisible(NULL))
     }
-    grDevices::graphics.off()
+    device_ids <- sort(as.integer(open_devices), decreasing = TRUE)
+    for (device_id in device_ids) {
+      if (is.na(device_id) || device_id <= 1L) next
+      suppressWarnings(try(grDevices::dev.off(which = device_id), silent = TRUE))
+    }
     invisible(NULL)
   }, error = function(e) {
     warning("Failed to reset graphics devices: ", conditionMessage(e), call. = FALSE)
@@ -294,10 +298,14 @@ reset_graphics_environment <- function() {
   })
 }
 
-drop_plot_objects <- function(...) {
-  object_names <- intersect(c(...), ls())
+drop_plot_objects <- function(..., env = parent.frame()) {
+  object_names <- unique(as.character(c(...)))
+  object_names <- object_names[nzchar(object_names)]
   if (length(object_names) > 0L) {
-    rm(list = object_names, inherits = FALSE)
+    existing_names <- object_names[vapply(object_names, exists, logical(1), envir = env, inherits = FALSE)]
+    if (length(existing_names) > 0L) {
+      rm(list = existing_names, envir = env)
+    }
   }
   invisible(NULL)
 }
@@ -331,7 +339,7 @@ close_graphics_device <- function(device_id) {
     return(invisible(FALSE))
   }
   tryCatch({
-    grDevices::dev.off(which = device_id)
+    suppressWarnings(grDevices::dev.off(which = device_id))
     invisible(TRUE)
   }, error = function(e) {
     invisible(FALSE)
@@ -2260,7 +2268,8 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
         suppressWarnings(print(p))
         if (interactive()) try(graphics::dev.flush(), silent = TRUE)
       }
-      drop_plot_objects("p")
+      drop_plot_objects("p", env = environment())
+      gc(FALSE)
     }, error = function(e) {
       warning(sprintf("Failed to create timeline plot for %s: %s\n", m, conditionMessage(e)))
     })
@@ -2292,7 +2301,8 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
           suppressWarnings(print(p))
           if (interactive()) try(graphics::dev.flush(), silent = TRUE)
         }
-        drop_plot_objects("sub", "p")
+        drop_plot_objects("sub", "p", env = environment())
+        gc(FALSE)
       }, error = function(e) {
         warning(sprintf("Failed to create scatter plot for %s vs %s: %s\n", m, env_name, conditionMessage(e)))
       })
@@ -2337,6 +2347,8 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       })
 
       plot_index <- plot_index + 1
+      drop_plot_objects("sub_mat", "p_mat", env = environment())
+      gc(FALSE)
     }
   }
   
@@ -2344,12 +2356,13 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
   if(length(matrix_plots) > 0) {
     tryCatch({
       gc()
-      drop_plot_objects("p", "sub", "p_mat", "sub_mat")
       matrix_dashboard <- gridExtra::arrangeGrob(
         grobs = matrix_plots,
         ncol = num_cols,
         top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2, fontfamily = ""))
       )
+      drop_plot_objects("matrix_plots", env = environment())
+      gc(FALSE)
       save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
       if(!dry_run) {
         tryCatch({
@@ -2362,6 +2375,8 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
           cat("Matrix dashboard saved to file but could not be rendered on screen.\n")
         })
       }
+      drop_plot_objects("matrix_dashboard", env = environment())
+      gc(FALSE)
     }, error = function(e) {
       warning(sprintf("Failed to arrange matrix plots: %s\n", conditionMessage(e)))
     })
@@ -2430,16 +2445,6 @@ run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis
       )
     }
 
-    if (mode == "browser" && !is.null(browser_viewer_url)) {
-      tryCatch(
-        {
-          if (requireNamespace("httpgd", quietly = TRUE)) {
-            try(httpgd::hgd(), silent = TRUE)
-          }
-        },
-        error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
-      )
-    }
   }, error = function(e) {
     render_error <<- e
   })
