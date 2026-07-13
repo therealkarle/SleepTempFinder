@@ -278,6 +278,58 @@ resolve_plot_output_dir <- function(path_value) {
 
 plot_output_dir <- resolve_plot_output_dir(plot_export_dir_cfg)
 
+resolve_plot_font_family <- function() {
+  current_family <- tryCatch(par("family"), error = function(e) "")
+  if (!is.null(current_family) && nzchar(current_family[1])) {
+    return(current_family[1])
+  }
+
+  current_device <- tryCatch(grDevices::dev.cur(), error = function(e) NA_integer_)
+  if (!is.na(current_device) && current_device > 1L) {
+    device_name <- tryCatch({
+      device_list <- grDevices::dev.list()
+      if (is.null(device_list)) {
+        ""
+      } else {
+        device_names <- names(device_list)
+        match_index <- match(as.character(current_device), device_names)
+        if (is.na(match_index)) "" else device_names[match_index]
+      }
+    }, error = function(e) "")
+    if (nzchar(device_name)) {
+      return("sans")
+    }
+  }
+
+  configured_family <- NULL
+  if (exists("plot_cfg", inherits = TRUE) && !is.null(plot_cfg)) {
+    configured_family <- plot_cfg$font_family
+    if (is.null(configured_family) || !nzchar(as.character(configured_family)[1])) {
+      configured_family <- plot_cfg$base_family
+    }
+    if (is.null(configured_family) || !nzchar(as.character(configured_family)[1])) {
+      configured_family <- plot_cfg$plot_font_family
+    }
+  }
+  if (!is.null(configured_family) && nzchar(as.character(configured_family)[1])) {
+    return(as.character(configured_family)[1])
+  }
+
+  "sans"
+}
+
+close_graphics_device <- function(device_id) {
+  if (is.null(device_id) || is.na(device_id) || device_id <= 1L) {
+    return(invisible(FALSE))
+  }
+  tryCatch({
+    grDevices::dev.off(which = device_id)
+    invisible(TRUE)
+  }, error = function(e) {
+    invisible(FALSE)
+  })
+}
+
 slugify_plot_name <- function(...) {
   parts <- vapply(list(...), function(value) as.character(value)[1], character(1))
   plot_name <- paste(parts[nzchar(parts)], collapse = "_")
@@ -2170,7 +2222,7 @@ metric_colors <- unname(sapply(metric_list, function(m) {
   plot_cfg$metric_colors[[m]] %||% "black"
 }))
 
-plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, dry_run) {
+plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, plot_font_family, dry_run) {
   if (!"used" %in% names(data_viz)) {
     data_viz <- mutate(data_viz, used = TRUE)
   }
@@ -2187,9 +2239,14 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
         ) +
         scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
         labs(title = metric_labels[i], x = NULL, y = NULL) +
-        theme_minimal(base_size = 12) +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
-              plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
+        theme_minimal(base_size = 12, base_family = plot_font_family) +
+        theme(
+          text = element_text(family = plot_font_family),
+          axis.text.x = element_text(angle = 45, hjust = 1, family = plot_font_family),
+          panel.grid.minor.x = element_line(color = "grey90"),
+          plot.title = element_text(face = "bold", color = metric_colors[i], family = plot_font_family),
+          plot.margin = margin(10, 10, 20, 10)
+        )
       save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
       if(!dry_run) {
         suppressWarnings(print(p))
@@ -2201,7 +2258,7 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
   }
 }
 
-plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run) {
+plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, plot_font_family, dry_run) {
   # Individual Scatter Plots
   for(env_name in names(env_analysis_vars)) {
     e_col <- env_analysis_vars[[env_name]]$col
@@ -2215,10 +2272,11 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
           geom_point(alpha = 0.5, color = "darkgrey") +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
           labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
-          theme_minimal()
+          theme_minimal(base_family = plot_font_family) +
+          theme(text = element_text(family = plot_font_family))
         if(!is.null(opt)) {
           p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
-            annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold")
+            annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold", family = plot_font_family)
         }
         save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
         if(!dry_run) {
@@ -2272,7 +2330,12 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
   # Only render matrix dashboard if we have valid plots
   if(length(matrix_plots) > 0) {
     tryCatch({
-      matrix_dashboard <- gridExtra::arrangeGrob(grobs = matrix_plots, ncol = num_cols, top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2)))
+      matrix_dashboard <- gridExtra::arrangeGrob(
+        grobs = matrix_plots,
+        ncol = num_cols,
+        top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2, fontfamily = plot_font_family))
+      )
+      invisible(gc())
       save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
       if(!dry_run) {
         tryCatch({
@@ -2291,6 +2354,74 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
   } else {
     warning("No valid matrix plots were created; skipping matrix dashboard.\n")
   }
+}
+
+run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis_vars, metric_list, metric_colors, metric_labels, optima_storage, bio_vars, dry_run) {
+  previous_plot_options <- options(
+    r.plot.useHttpgd = getOption("r.plot.useHttpgd"),
+    vsc.plot.useHttpgd = getOption("vsc.plot.useHttpgd"),
+    vsc.httpgd = getOption("vsc.httpgd")
+  )
+  opened_device_id <- NULL
+  on.exit({
+    options(previous_plot_options)
+    if (!is.null(opened_device_id)) {
+      close_graphics_device(opened_device_id)
+    }
+  }, add = TRUE)
+
+  if (mode == "browser") {
+    options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
+    tryCatch(
+      {
+        invisible(capture.output(httpgd::hgd()))
+        opened_device_id <- tryCatch(grDevices::dev.cur(), error = function(e) NULL)
+      },
+      error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n")
+    )
+    browser_viewer_url <- if (!is.null(opened_device_id)) {
+      tryCatch(
+        httpgd::hgd_url(which = opened_device_id),
+        error = function(e) NULL
+      )
+    } else {
+      NULL
+    }
+    if (auto_open_browser_viewer && !is.null(browser_viewer_url)) {
+      tryCatch(
+        {
+          utils::browseURL(browser_viewer_url)
+        },
+        error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
+      )
+    }
+  } else {
+    options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
+    browser_viewer_url <- NULL
+  }
+
+  plot_font_family <- resolve_plot_font_family()
+
+  if (!dry_run) {
+    plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, plot_font_family, dry_run)
+    plot_scatter_and_matrix(
+      final_data_matched,
+      env_analysis_vars,
+      metric_list,
+      metric_colors,
+      optima_storage,
+      bio_vars,
+      plot_font_family,
+      dry_run
+    )
+  }
+
+  if (mode == "browser" && !is.null(browser_viewer_url)) {
+    cat("\nBrowser viewer URL:\n")
+    cat(sprintf("%s\n", browser_viewer_url))
+  }
+
+  invisible(browser_viewer_url)
 }
 
 dashboard_df <- final_data_viz %>%
@@ -2378,71 +2509,18 @@ cat("3. OPTIMUM: Calculated 'Sweet Spot' based on quadratic regression.\n")
 cat("===========================================================\n")
 
 
-# --- 6. INDIVIDUAL TIMELINE PLOTS ---
-for (i in seq_along(metric_list)) {
-  m <- metric_list[i]
-  p <- ggplot(final_data_viz, aes(x = Date, y = .data[[m]])) +
-    geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
-    geom_point(color = metric_colors[i], size = 2, na.rm = TRUE) +
-    scale_x_date(
-      date_labels = "%d.%m.%Y",
-      breaks = "2 days",
-      minor_breaks = "1 day",
-      expand = expansion(mult = c(0.01, 0.01))
-    ) +
-    labs(title = metric_labels[i], x = NULL, y = NULL) +
-    theme_minimal(base_size = 12) +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
-      panel.grid.minor.x = element_line(color = "grey90"),
-      plot.title = element_text(face = "bold", color = metric_colors[i]),
-      plot.margin = margin(10, 10, 20, 10)
-    )
-  if (!dry_run) print(p)
-}
-
-
 for (mode in run_modes) {
-  if (mode == "browser") {
-    options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
-    tryCatch(
-      {
-        invisible(capture.output(httpgd::hgd()))
-      },
-      error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n")
-    )
-    browser_viewer_url <- tryCatch(
-      httpgd::hgd_url(which = grDevices::dev.cur()),
-      error = function(e) NULL
-    )
-    if (auto_open_browser_viewer && !is.null(browser_viewer_url)) {
-      tryCatch(
-        {
-          utils::browseURL(browser_viewer_url)
-        },
-        error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
-      )
-    }
-  } else {
-    options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
-  }
-
-  if (!dry_run) {
-    plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, dry_run)
-    plot_scatter_and_matrix(
-      final_data_matched,
-      env_analysis_vars,
-      metric_list,
-      metric_colors,
-      optima_storage,
-      bio_vars,
-      dry_run
-    )
-  }
-
-  if (mode == "browser" && !is.null(browser_viewer_url)) {
-    cat("\nBrowser viewer URL:\n")
-    cat(sprintf("%s\n", browser_viewer_url))
-  }
+  run_plot_pass(
+    mode,
+    final_data_viz,
+    final_data_matched,
+    env_analysis_vars,
+    metric_list,
+    metric_colors,
+    metric_labels,
+    optima_storage,
+    bio_vars,
+    dry_run
+  )
 }
 
