@@ -1,110 +1,159 @@
 # SleepTempFinder
 
-Ein R-basiertes Analyseprojekt zur Auswertung von Garmin-Schlafdaten und Raumtemperatursensoren.
+SleepTempFinder is an R-based analysis project for combining Garmin sleep exports with room temperature and humidity sensor data.
 
-## Überblick
+## What It Does
 
-Dieses Projekt liest Schlaf-CSV-Dateien aus Garmin und Raumtemperatur-/Feuchtesensor-CSV-Dateien ein, ordnet die Messwerte den Schlafperioden zu, berechnet nächtliche Mittelwerte und führt eine Analyse mit optionalen Filterungen durch.
+The project:
 
-Die Hauptlogik liegt in:
-- `RScript/SleepTempFinder.R` – Hauptskript für Datenimport, Bereinigung, Zuordnung, Filterung und Visualisierung
-- `RScript/studio_commands.R` – interaktive Helferfunktionen für RStudio, insbesondere `run_analysis()`
-- `RScript/config.yaml` – zentrale Konfiguration für Dateiformate, Sensoren, Kalender und Plot-Einstellungen
+- imports Garmin sleep CSV files
+- imports room sensor CSV files
+- matches sensor readings to each sleep period
+- calculates nightly environmental averages and standard deviations
+- applies optional tag, sensor, date, and numeric filters
+- produces tables and plots for analysis
 
-## Voraussetzungen
+## Main Entry Points
 
-- R installiert
-- Die benötigten Pakete werden beim ersten Lauf automatisch installiert:
-  - `tidyverse`, `lubridate`, `yaml`, `broom`, `GGally`, `gridExtra`, `grid`, `scales`, `httpgd` (bei browser-Plotmodus)
+The core logic lives in:
 
-## Verzeichnisstruktur
+- `RScript/SleepTempFinder.R` - main analysis script for import, cleanup, matching, filtering, and visualization
+- `RScript/studio_commands.R` - interactive helper functions for RStudio, especially `run_analysis()`
+- `RScript/config.yaml` - central configuration for file formats, sensors, calendar settings, filters, and plots
 
-- `data/` – Datumsgesteuerte Ordner mit CSV-Exports
-- `PlotOutput/` – optionaler Ausgabeordner für gespeicherte Plot-Bilder
-- `RScript/` – Skripte und Konfigurationsdateien
-- `RScript/config.yaml` – zentrale Projektkonfiguration
-- `RScript/config.private.yaml` – optionaler lokaler Override für sensible oder benutzerdefinierte Einstellungen
+## Requirements
 
-## Konfiguration
+- R installed
+- The following packages are installed automatically on first run if needed:
+  - `tidyverse`
+  - `lubridate`
+  - `yaml`
+  - `broom`
+  - `GGally`
+  - `gridExtra`
+  - `grid`
+  - `scales`
+  - `httpgd` for browser plot mode
 
-Die wichtigste Datei ist `RScript/config.yaml`.
+## Project Structure
 
-Wichtige Abschnitte:
-- `data_directory` – Basisverzeichnis für deine Datensätze
-- `parse_orders` – Datum-/Uhrzeitformate für Garmin- und Sensor-CSV-Dateien
-- `locale` – insbesondere `decimal_mark: ","` für Sensor-CSV-Dateien mit Komma als Dezimaltrennzeichen
-- `sensor_files` – Sensor-Definitionen mit Name, Dateipfad, Spaltennamen und optionalen Nicknames
-- `calendar_default_sensor` – Standard-Sensor, falls im Kalender kein Sensor genannt wird
-- `analysis_filter` – default-Werte für Filterungen, die beim Start geladen werden
-- `plot.output_mode` – `rstudio`, `browser` oder `both`
-- `plot.export.enabled` – wenn `true`, werden Grafiken nach `plot.export.output_dir` geschrieben
+- `data/` - CSV exports and date-based subfolders
+- `PlotOutput/` - optional output directory for saved plot images
+- `RScript/` - project scripts and configuration files
+- `RScript/config.yaml` - main project configuration
+- `RScript/config.private.yaml` - optional local override for personal settings
 
-Wenn du persönliche Einstellungen brauchst, lege `RScript/config.private.yaml` an. Dort kannst du Konfigurationswerte überschreiben, ohne das Repo-Tracking zu ändern.
+## Configuration
 
-## Ausführen des Hauptskripts
+The most important file is `RScript/config.yaml`.
 
-### Von der Kommandozeile
+Useful sections:
 
-Aus dem Projektordner:
+- `data_directory` - base folder for your datasets
+- `parse_orders` - date and time formats for Garmin and sensor CSV files
+- `locale` - especially `decimal_mark: ","` for sensor CSV files that use commas as decimal separators
+- `sensor_files` - sensor definitions with file paths, column names, and optional nicknames
+- `calendar_default_sensor` - fallback sensor if the calendar does not specify one
+- `analysis_filter` - default filter settings loaded at startup
+- `outlier_filter` - rules for excluding outlier nights
+- `plot.output_mode` - `rstudio`, `browser`, or `both`
+- `plot.export.enabled` - when `true`, plot images are written to `plot.export.output_dir`
+
+If you need personal settings, create `RScript/config.private.yaml` and override values there without changing the repository defaults.
+
+## Running From The Command Line
+
+From the project root:
 
 ```sh
 Rscript RScript/SleepTempFinder.R
 ```
 
-Optional mit Filter:
+With a filter:
 
 ```sh
 Rscript RScript/SleepTempFinder.R --filter="2026;Sensors=WohnwagenSensor"
 ```
 
-Mit Dry-Run (plots werden unterdrückt):
+Dry run, which suppresses plot output:
 
 ```sh
 Rscript RScript/SleepTempFinder.R --dry-run
 ```
 
-Mit Verbose-Ausgabe (zusätzliche Debug-Informationen):
+Verbose mode for additional debug output:
 
 ```sh
 Rscript RScript/SleepTempFinder.R --verbose
 ```
 
-### Filter-Syntax
+## Filter Syntax
 
-Die Filter werden als semikolon-getrennte Zeichenkette angegeben.
+Filters are passed as a semicolon-separated string.
 
-Mögliche Bestandteile:
-- Datumsauswahl: `YYYY`, `qN.YYYY`, `MM.YYYY`, `YYYY.MM`, `DD.MM.YYYY`, `DD.MM.YYYY,DD.MM.YYYY`
-- Sensoren: `Sensors=Name` (mehrere Sensoren mit `,` oder `|`)
-- Tags: `Tags=Tag1|Tag2` (OR) oder `Tags=Tag1,Tag2` (AND)
-- Komplexe Tag-Ausdrücke: `TagsExpr=` mit `!`, `,`, `&`, `*`, Klammern
-- Numerische Ausdrücke: z.B. `temp>18`, `SleepScore>80`, `18<temp<22`
+Supported parts:
 
-Beispiele:
+- Date selection: `YYYY`, `qN.YYYY`, `MM.YYYY`, `YYYY.MM`, `DD.MM.YYYY`, `DD.MM.YYYY,DD.MM.YYYY`
+- Sensors: `Sensors=Name` with multiple values separated by `,` or `|`
+- Tags: `Tags=Tag1|Tag2` for OR or `Tags=Tag1,Tag2` for AND
+- Complex tag expressions: `TagsExpr=` with `!`, `,`, `&`, `*`, and parentheses
+- Numeric expressions: for example `temp>18`, `SleepScore>80`, `18<temp<22`
+
+Examples:
 
 ```sh
 Rscript RScript/SleepTempFinder.R --filter="q1.2026;Tags=Hochlitten"
 Rscript RScript/SleepTempFinder.R --filter="01.2026;Sensors=WohnwagenSensor"
 Rscript RScript/SleepTempFinder.R --filter="temp>18"
 Rscript RScript/SleepTempFinder.R --filter="SleepScore>80"
-Rscript RScript/SleepTempFinder.R --filter="TagsExpr=(Urlaub, Wohnmobil) & !Hochlitten"
+Rscript RScript/SleepTempFinder.R --filter="TagsExpr=(Urlaub,Wohnmobil) & !Hochlitten"
 ```
 
-Hinweis: Die Ausreißererkennung wird über `RScript/config.yaml` konfiguriert. Setze `outlier_filter.mode` auf `false`, `manual` oder `value_interval`.
-Zusätzlich gibt es eine `outlier_detection`-Sektion mit allen Metriken, die auf `true`, `false`, `self` oder `value` gesetzt werden können.
+Notes:
 
-## Interaktive Nutzung in RStudio
+- `filter` overrides the other command arguments.
+- The analysis filter can also target numeric columns such as `Avg_Temp`, `Sleep_Score`, `HRV`, and `RHR`.
+- Outlier handling is configured in `RScript/config.yaml`.
 
-1. Öffne das Projekt in RStudio.
-2. Source das Hilfsskript:
+## Interactive Use In RStudio
+
+1. Open the project in RStudio.
+2. Source the helper script:
 
 ```r
 source("RScript/studio_commands.R")
 ```
 
-3. Starte die Analyse direkt mit `run_analysis()`.
+3. Run an analysis with `run_analysis()`.
 
-### Beispiele für `run_analysis()`
+## Helper Functions
+
+`run_analysis(date = NULL, tags = NULL, sensors = NULL, dry_run = FALSE, filter = NULL, flags = NULL)`
+
+- Main helper for interactive use.
+- Builds the command-line style arguments used by the main script.
+- Accepts date, tag, and sensor filters either positionally or by name.
+- Accepts a raw `filter` string and uses it instead of the other arguments.
+- Supports unquoted logical expressions such as `run_analysis(temp > 18)`.
+- Accepts `flags` as an alias for `tags`.
+
+`run_clear_filter()`
+
+- Clears the temporary `_STF_ARGS_` environment variable.
+- Useful if you want to remove a previously set interactive filter.
+
+`setwd_to_active()`
+
+- Sets the working directory to the folder of the currently active document in RStudio.
+- Helpful when you want relative paths to resolve correctly before calling `run_analysis()`.
+
+Preset helpers:
+
+- `run_winter2026()` -> `run_analysis("02.2026")`
+- `run_wohnwagen()` -> `run_analysis("Sensors=Wohnwagen")`
+- `run_hochlitten()` -> `run_analysis("Tags=Hochlitten")`
+
+## `run_analysis()` Examples
 
 ```r
 run_analysis("2026")
@@ -113,103 +162,122 @@ run_analysis(sensors = "WohnwagenSensor")
 run_analysis(filter = "temp>18")
 run_analysis(filter = "SleepScore>80")
 run_analysis(tags = "(Urlaub, Wohnmobil) & !Hochlitten")
-run_analysis(tags != 'Urlaub')
+run_analysis(tags != "Hochlitten")
 ```
 
-### `run_analysis()`-Argumente
+## Sensor And Calendar Data
 
-- `date` – optionaler Datumsfilter oder Datumsbereich (z. B. `"2026"`, `"01.2026"`, `"02.02.2026,04.03.2026"`)
-- `tags` – Filter auf Kalendertags
-- `sensors` – Filter auf Sensoren
-- `dry_run` – `TRUE` unterdrückt Plot-Ausgabe
-- `filter` – roher Filterstring im selben Format wie `--filter`
+Sensors are defined in `RScript/config.yaml` under `sensor_files`. Each sensor entry can contain:
 
-Wenn `filter` gesetzt ist, hat es Vorrang vor den anderen Parametern.
+- `nickname` - alternative names used for calendar matching
+- `path` - sensor CSV file under `data/` or in a subfolder
+- `col_time`, `col_temp`, `col_hum` - column names in the sensor CSV
+- `default: true` - optional default sensor
 
-## Komplexe Tag-Filter
-
-Die neue Logik unterstützt komplexe boolesche Ausdrücke für Tags.
-
-Operatoren:
-- `,` → OR
-- `&` → AND
-- `!` → NOT
-- `*` → XOR
-- Klammern für Gruppierung
-
-Beispiele:
-
-```r
-run_analysis(tags = "Urlaub, Wohnmobil")
-run_analysis(tags = "Urlaub & !Hochlitten")
-run_analysis(tags = "(Hochlitten, Trainingslager) & !Urlaub")
-run_analysis(tags = "Urlaub * Wohnmobil")
-```
-
-Du kannst auch normale R-Vergleiche verwenden; sie werden automatisch in `TagsExpr=` konvertiert:
-
-```r
-run_analysis(tags != 'Hochlitten')
-run_analysis(tags == 'Urlaub')
-run_analysis(tags %in% c('Urlaub','Wohnmobil'))
-```
-
-## Sensor- und Kalenderdaten
-
-Sensoren werden in `RScript/config.yaml` über `sensor_files` definiert. Jeder Eintrag enthält:
-- `nickname` – alternative Bezeichnungen für Kalenderzuordnung
-- `path` – Sensor-CSV-Datei unter `data/` oder in einem Unterordner
-- `col_time`, `col_temp`, `col_hum` – Spaltennamen im Sensor-CSV
-- `default: true` – optionaler Standard-Sensor
-
-Kalenderereignisse können Sensor und tags im `SUMMARY`/`DESCRIPTION` enthalten, z. B.:
+Calendar events can define the sensor and tags in `SUMMARY` or `DESCRIPTION`, for example:
 
 ```text
 sensor=Wohnwagen; tags=Hochlitten
 ```
 
-Wenn kein Sensor angegeben ist, wird `calendar_default_sensor` bzw. der standardmäßige Sensor verwendet.
+If no sensor is specified, `calendar_default_sensor` or the configured default sensor is used.
 
-## Datenquelle und Import
+## Data Sources
 
-- Schlafdaten: Garmin-CSV-Dateien im `data/`-Verzeichnis werden automatisch eingelesen.
-- Sensor-CSV-Dateien: werden per `sensor_files`-Konfiguration erkannt und mit lokaler Dezimaltrennung importiert.
-- Kalender: standardmäßig aus dem konfigurierten Google-Kalender-Feed oder einer lokalen Kalenderdatei, wenn `calendar_source.mode` geändert wird.
+- Sleep data: Garmin CSV files inside `data/`
+- Sensor data: CSV files detected through `sensor_files`
+- Calendar data: either the configured Google Calendar feed or a local calendar file, depending on `calendar_source.mode`
 
-## Ausgabe
+## Output
 
-Das Skript erzeugt:
-- analysierte Tabellen mit zugeordneten Nächten
-- Audit-Informationen zu bereinigten/ausgeschlossenen Nächten
-- Plots in der RStudio-Grafikfläche oder im Browser
-- optional gespeicherte Plot-Bilder in `PlotOutput/`
+The script produces:
 
-## Tipps
+- a reviewed table with matched nights
+- audit information for excluded or cleaned nights
+- plots in the RStudio graphics pane or in the browser
+- optional plot images in `PlotOutput/`
 
-- Wenn du nur bestimmte Sensoren sehen willst, kannst du `Sensors=<Name>` im Filter verwenden.
-- Für komplexe Tag-Logik benutze `TagsExpr=` oder `run_analysis(tags=...)` mit `!`, `&`, `,`, `*`.
-- Wenn du die Konfiguration lokal ändern willst, erstelle `RScript/config.private.yaml`.
+## Tips
 
-## Beispiel-Sensoren im aktuellen Setup
+- Use `Sensors=<Name>` to focus on a specific sensor.
+- Use `TagsExpr=` or `run_analysis(tags = ...)` for complex boolean tag logic.
+- Create `RScript/config.private.yaml` if you want local configuration overrides.
 
-- `FlorianZimmerSensor` (Standard, `ThermometerZimmerFlorian_data.csv`)
+## Example Sensors In The Current Setup
+
+- `FlorianZimmerSensor` (default, `ThermometerZimmerFlorian_data.csv`)
 - `WohnwagenSensor` (`Wohnwagen_data.csv`)
 - `WohnmobilAussen` (`Wohnmobil Außen_data.csv`)
 - `WohnmobilInnen` (`Wohnmobil Innen_data.csv`)
 
-## Beispiel-Tags
+## Example Tags
 
 - `Urlaub`
 - `Wohnmobil`
 - `Trainingslager`
 - `Hochlitten`
 
-## Schnellstart
+## Quick Start
 
-1. Projekt öffnen in RStudio oder R-Konsole.
-2. `source("RScript/studio_commands.R")`
-3. `run_analysis("2026")` oder `run_analysis(filter = "temp>18")`
+1. Open the project in RStudio or an R console.
+2. Run `source("RScript/studio_commands.R")`.
+3. Run `run_analysis("2026")` or `run_analysis(filter = "temp>18")`.
+
+## How The Values Are Calculated
+
+This section describes the values that appear in the nightly output and in the summary tables.
+
+### Sleep And Metadata Fields
+
+- `Date` - taken from the Garmin sleep export row for the night.
+- `Sensor` - the sensor assigned from the calendar entry, or the default sensor if the calendar does not specify one.
+- `Flags` - tags or flags parsed from the calendar entry.
+- `Sensor_File` - the sensor file that was actually used for the night.
+- `Outlier_Reason` - a text reason if the night was marked as an outlier.
+
+### Sleep Metrics
+
+- `Sleep_Score` - read from the Garmin sleep export and renamed from the configured Garmin sleep score column.
+- `HRV` - read from the Garmin sleep export and renamed from the configured HRV column.
+- `RHR` - read from the Garmin sleep export and renamed from the configured resting heart rate column.
+- `Sleep_Duration` - read from the Garmin sleep export and renamed from the configured duration column. It is displayed in `hh:mm` format in the final output.
+
+### Sensor Metrics
+
+For each night, sensor readings are selected from the chosen sensor file within the sleep window:
+
+- start = bedtime minus `matching_padding_minutes`
+- end = wake time plus `matching_padding_minutes`
+
+The script then uses only the sensor rows whose timestamps fall inside that window.
+
+- `Avg_Temp` - mean of all selected room temperature readings
+- `Temp_SD` - standard deviation of the selected room temperature readings
+- `Avg_Rel_Hum` - mean of all selected relative humidity readings
+- `Rel_Hum_SD` - standard deviation of the selected relative humidity readings
+- `Avg_Abs_Hum` - mean of all selected absolute humidity readings
+- `Abs_Hum_SD` - standard deviation of the selected absolute humidity readings
+- `Raw_N_Readings` - number of sensor readings used for the night
+- `Sensor_Files` - list of source sensor files contributing readings
+- `Sensor_Names` - list of sensor names contributing readings
+
+### Filtering And Summary Statistics
+
+- Nights with missing sleep metrics can be excluded before analysis.
+- Nights with no usable sensor data can be excluded before analysis.
+- Outlier filtering is applied before the final analysis table is built.
+- The analysis filter from the config is applied after outlier filtering.
+- Summary statistics are calculated from the remaining nights.
+
+For each selected metric in the summary table:
+
+- `mean` - arithmetic mean of the non-missing values
+- `median` - median of the non-missing values
+- `std_dev` - standard deviation, or `NA` if only one value is available
+- `[lower;upper]` - the configured summary interval, based on quantiles of the filtered values
+
+`Sleep_Duration` is formatted as hours and minutes in the summary output, while the other numeric values are rounded for display.
 
 ---
 
-Bei Bedarf kann diese README um eine Sektion zu spezifischen CSV-Headeranforderungen oder um Beispiele für `config.private.yaml` erweitert werden.
+If you want, this README can also be extended with a dedicated CSV column reference or an example `config.private.yaml`.
