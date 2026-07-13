@@ -29,6 +29,71 @@ for (pkg in pkgs) {
 suppressPackageStartupMessages(library(tidyverse))
 suppressPackageStartupMessages(library(lubridate))
 
+# Explicit aliases keep lintr aware of package functions in this script-style project.
+`%>%` <- magrittr::`%>%`
+across <- dplyr::across
+aes <- ggplot2::aes
+all_of <- dplyr::all_of
+annotate <- ggplot2::annotate
+any_of <- dplyr::any_of
+arrange <- dplyr::arrange
+as_tibble <- tibble::as_tibble
+bind_rows <- dplyr::bind_rows
+case_when <- dplyr::case_when
+complete <- tidyr::complete
+distinct <- dplyr::distinct
+element_line <- ggplot2::element_line
+element_text <- ggplot2::element_text
+evaluate_flag_ast <- NULL
+everything <- dplyr::everything
+expansion <- ggplot2::expansion
+filter <- dplyr::filter
+fixed <- stringr::fixed
+geom_blank <- ggplot2::geom_blank
+geom_line <- ggplot2::geom_line
+geom_point <- ggplot2::geom_point
+geom_smooth <- ggplot2::geom_smooth
+geom_vline <- ggplot2::geom_vline
+gpar <- grid::gpar
+ggplot <- ggplot2::ggplot
+group_by <- dplyr::group_by
+if_else <- dplyr::if_else
+labs <- ggplot2::labs
+lead <- dplyr::lead
+left_join <- dplyr::left_join
+map <- purrr::map
+map2_chr <- purrr::map2_chr
+map_chr <- purrr::map_chr
+map_dbl <- purrr::map_dbl
+map_int <- purrr::map_int
+map_lgl <- purrr::map_lgl
+margin <- ggplot2::margin
+mutate <- dplyr::mutate
+parse_flag_expression <- NULL
+pull <- dplyr::pull
+read_delim <- readr::read_delim
+regex <- stringr::regex
+rename <- dplyr::rename
+scale_x_date <- ggplot2::scale_x_date
+select <- dplyr::select
+set_names <- purrr::set_names
+str_detect <- stringr::str_detect
+str_extract <- stringr::str_extract
+str_match <- stringr::str_match
+str_match_all <- stringr::str_match_all
+str_replace <- stringr::str_replace
+str_replace_all <- stringr::str_replace_all
+str_split <- stringr::str_split
+str_sub <- stringr::str_sub
+str_trim <- stringr::str_trim
+summarise <- dplyr::summarise
+sym <- rlang::sym
+textGrob <- grid::textGrob
+theme <- ggplot2::theme
+theme_minimal <- ggplot2::theme_minimal
+theme_void <- ggplot2::theme_void
+tibble <- tibble::tibble
+
 use_future <- FALSE
 if (requireNamespace("future", quietly = TRUE) && requireNamespace("furrr", quietly = TRUE)) {
   use_future <- TRUE
@@ -2250,29 +2315,41 @@ for(env_name in names(env_analysis_vars)) {
   e_unit <- env_analysis_vars[[env_name]]$unit
   cat(sprintf("\n>>> IMPACT OF %s:\n", toupper(env_name)))
   for(m in bio_vars) {
-    sub <- final_data_matched %>% filter_outlier_rows_for_metric(e_col) %>% filter_outlier_rows_for_metric(m) %>%
+    sub <- final_data_matched %>%
+      filter_outlier_rows_for_metric(e_col) %>%
+      filter_outlier_rows_for_metric(m) %>%
       filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
-    if(nrow(sub) < 5) next
-    
+    if (nrow(sub) < 5) next
+
     sub_model <- sub
-    if(m == "RHR") sub_model[[m]] <- -sub_model[[m]] # Invert for peak
-    
-    fit_poly <- lm(as.formula(paste(m, "~ poly(", e_col, ", 2, raw=TRUE)")), data = sub_model)
+    if (m == "RHR") {
+      sub_model[[m]] <- -sub_model[[m]] # Invert for peak
+    }
+
+    fit_poly <- lm(
+      as.formula(paste(m, "~ poly(", e_col, ", 2, raw=TRUE)")),
+      data = sub_model
+    )
     fit_lin <- lm(as.formula(paste(m, "~", e_col)), data = sub)
-    
+
     slope <- coef(fit_lin)[2]
-    b <- coef(fit_poly); opt <- -b[2] / (2 * b[3])
+    b <- coef(fit_poly)
+    opt <- -b[2] / (2 * b[3])
     is_peak <- b[3] < 0 && opt >= min(sub[[e_col]]) && opt <= max(sub[[e_col]])
-    
+
     cat(sprintf("  [%s]\n", m))
-    if(is_peak) {
+    if (is_peak) {
       optima_storage[[paste0(env_name, "_", m)]] <- opt
       cat(sprintf("    - Optimal: %.1f %s\n", opt, e_unit))
     } else {
-      trend_dir <- if(slope > 0) "increased" else "decreased"
+      trend_dir <- if (slope > 0) "increased" else "decreased"
       cat(sprintf("    - No clear optimum. Linear slope: %.2f per %s\n", slope, e_unit))
     }
-    cat(sprintf("    - P-Value: %.4f | R-Squared: %.1f%%\n", summary(fit_lin)$coefficients[2,4], summary(fit_poly)$adj.r.squared * 100))
+    cat(sprintf(
+      "    - P-Value: %.4f | R-Squared: %.1f%%\n",
+      summary(fit_lin)$coefficients[2, 4],
+      summary(fit_poly)$adj.r.squared * 100
+    ))
   }
 }
 
@@ -2287,34 +2364,66 @@ cat("===========================================================\n")
 
 
 # --- 6. INDIVIDUAL TIMELINE PLOTS ---
-for(i in seq_along(metric_list)) {
+for (i in seq_along(metric_list)) {
   m <- metric_list[i]
   p <- ggplot(final_data_viz, aes(x = Date, y = .data[[m]])) +
     geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
     geom_point(color = metric_colors[i], size = 2, na.rm = TRUE) +
-    scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
+    scale_x_date(
+      date_labels = "%d.%m.%Y",
+      breaks = "2 days",
+      minor_breaks = "1 day",
+      expand = expansion(mult = c(0.01, 0.01))
+    ) +
     labs(title = metric_labels[i], x = NULL, y = NULL) +
     theme_minimal(base_size = 12) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid.minor.x = element_line(color = "grey90"),
-          plot.title = element_text(face = "bold", color = metric_colors[i]), plot.margin = margin(10, 10, 20, 10))
-  if(!dry_run) print(p)
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor.x = element_line(color = "grey90"),
+      plot.title = element_text(face = "bold", color = metric_colors[i]),
+      plot.margin = margin(10, 10, 20, 10)
+    )
+  if (!dry_run) print(p)
 }
 
 
 for (mode in run_modes) {
   if (mode == "browser") {
     options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
-    tryCatch({ invisible(capture.output(httpgd::hgd())) }, error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n"))
-    browser_viewer_url <- tryCatch(httpgd::hgd_url(which = grDevices::dev.cur()), error = function(e) NULL)
+    tryCatch(
+      {
+        invisible(capture.output(httpgd::hgd()))
+      },
+      error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n")
+    )
+    browser_viewer_url <- tryCatch(
+      httpgd::hgd_url(which = grDevices::dev.cur()),
+      error = function(e) NULL
+    )
     if (auto_open_browser_viewer && !is.null(browser_viewer_url)) {
-      tryCatch({ utils::browseURL(browser_viewer_url) }, error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n"))
+      tryCatch(
+        {
+          utils::browseURL(browser_viewer_url)
+        },
+        error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
+      )
     }
   } else {
     options(r.plot.useHttpgd = FALSE, vsc.plot.useHttpgd = FALSE, vsc.httpgd = FALSE)
   }
-  
-  if(!dry_run) plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, dry_run)
-  if(!dry_run) plot_scatter_and_matrix(final_data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run)
+
+  if (!dry_run) {
+    plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, dry_run)
+    plot_scatter_and_matrix(
+      final_data_matched,
+      env_analysis_vars,
+      metric_list,
+      metric_colors,
+      optima_storage,
+      bio_vars,
+      dry_run
+    )
+  }
 
   if (mode == "browser" && !is.null(browser_viewer_url)) {
     cat("\nBrowser viewer URL:\n")

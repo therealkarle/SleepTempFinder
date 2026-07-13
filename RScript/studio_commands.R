@@ -80,6 +80,17 @@ cat("Command Syntax: run_analysis(date=NULL, tags=NULL, sensors=NULL, dry_run=FA
 #   !(tags %in% c('A'))      →  !A
 convert_tag_comparison <- function(expr_str) {
   expr_str <- trimws(expr_str)
+
+  # Pattern 0: !(flags ...) - negated pattern
+  if (grepl("^!\\s*\\(", expr_str, perl = TRUE)) {
+    inner <- sub("^!\\s*\\((.+)\\)\\s*$", "\\1", expr_str, perl = TRUE)
+    if (inner != expr_str) {
+      inner_result <- convert_tag_comparison(inner)
+      if (!is.null(inner_result)) {
+        return(paste0("!(", inner_result, ")"))
+      }
+    }
+  }
   
   # Pattern 1: flags != 'value' or tags != 'value'
   if (grepl("(?:flags|tags)\\s*!=\\s*", expr_str, perl = TRUE)) {
@@ -117,17 +128,6 @@ convert_tag_comparison <- function(expr_str) {
         if (length(values) > 0) {
           return(paste(values, collapse = ","))
         }
-      }
-    }
-  }
-  
-  # Pattern 4: !(flags ...) - negated pattern
-  if (grepl("^!\\s*\\(", expr_str, perl = TRUE)) {
-    inner <- sub("^!\\s*\\((.+)\\)\\s*$", "\\1", expr_str, perl = TRUE)
-    if (inner != expr_str) {
-      inner_result <- convert_flag_comparison(inner)
-      if (!is.null(inner_result)) {
-        return(paste0("!(", inner_result, ")"))
       }
     }
   }
