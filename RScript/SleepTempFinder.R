@@ -2364,6 +2364,16 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       drop_plot_objects("matrix_plots", env = environment())
       gc(FALSE)
       save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
+      if (!dry_run) {
+        tryCatch({
+          suppressWarnings(grid::grid.newpage())
+          suppressWarnings(grid::grid.draw(matrix_dashboard))
+          if (interactive()) try(graphics::dev.flush(), silent = TRUE)
+        }, error = function(e) {
+          warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
+          cat("Matrix dashboard saved to file but could not be rendered on screen.\n")
+        })
+      }
       drop_plot_objects("matrix_dashboard", env = environment())
       gc(FALSE)
     }, error = function(e) {
