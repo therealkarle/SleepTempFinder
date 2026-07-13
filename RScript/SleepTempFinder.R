@@ -584,10 +584,12 @@ parse_datetime_safe <- function(x, type = "garmin_datetime") {
     return(parse_date_time(x, quiet = TRUE))
   }
   res <- parse_date_time(x, orders = orders[[type]], quiet = TRUE)
-  # warn when parsing yields NA values so we can diagnose missing timestamps
+  # warn only for actual parse failures; plain missing values are expected
   if (length(res) > 0 && any(is.na(res))) {
-    failed <- which(is.na(res))
-    sample_vals <- unique(head(as.character(x[failed]), 5))
+    x_chr <- as.character(x)
+    failed <- which(is.na(res) & !is.na(x_chr) & nzchar(trimws(x_chr)))
+    sample_vals <- unique(head(x_chr[failed], 5))
+    if (length(failed) == 0) return(res)
     warning(sprintf("parse_datetime_safe: %d values failed to parse for type '%s'. Examples: %s",
                     length(failed), type, paste(sample_vals, collapse = "; ")))
   }
