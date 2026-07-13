@@ -2364,17 +2364,6 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       drop_plot_objects("matrix_plots", env = environment())
       gc(FALSE)
       save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
-      if(!dry_run) {
-        tryCatch({
-          suppressWarnings(grid::grid.newpage())
-          suppressWarnings(grid::grid.draw(matrix_dashboard))
-          if (interactive()) try(graphics::dev.flush(), silent = TRUE)
-        }, error = function(e) {
-          warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
-          # Attempt to save without rendering
-          cat("Matrix dashboard saved to file but could not be rendered on screen.\n")
-        })
-      }
       drop_plot_objects("matrix_dashboard", env = environment())
       gc(FALSE)
     }, error = function(e) {
@@ -2386,7 +2375,9 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
 }
 
 run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis_vars, metric_list, metric_colors, metric_labels, optima_storage, bio_vars, dry_run) {
-  reset_graphics_environment()
+  if (mode != "browser") {
+    reset_graphics_environment()
+  }
   previous_plot_options <- options(
     r.plot.useHttpgd = getOption("r.plot.useHttpgd"),
     vsc.plot.useHttpgd = getOption("vsc.plot.useHttpgd"),
@@ -2395,7 +2386,7 @@ run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis
   opened_device_id <- NULL
   on.exit({
     options(previous_plot_options)
-    if (!is.null(opened_device_id)) {
+    if (!is.null(opened_device_id) && mode != "browser") {
       close_graphics_device(opened_device_id)
     }
   }, add = TRUE)
