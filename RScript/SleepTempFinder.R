@@ -1920,8 +1920,41 @@ sensor_summary <- sensor_raw %>%
 
 
 # --- 3. DATA PREP & AUDIT ---
-# nightly_review_df has been constructed above; it contains a row per night
-# with all input sources (sleep file path, sensor file(s)) plus flags and averages.
+# Build the per-night review, analysis, and dashboard views from the same source chain.
+build_dashboard_df <- function(viz_source, analysis_df, selected_metrics) {
+  viz_source <- viz_source %>%
+    filter(!is.na(Date))
+  if (nrow(viz_source) > 0) {
+    full_dates <- seq(min(viz_source$Date, na.rm = TRUE), max(viz_source$Date, na.rm = TRUE), by = "1 day")
+    viz_source <- viz_source %>%
+      complete(Date = full_dates) %>%
+      distinct(Date, .keep_all = TRUE)
+  }
+
+  viz_source %>%
+    left_join(
+      analysis_df %>% distinct(Date) %>% mutate(used = TRUE),
+      by = "Date"
+    ) %>%
+    mutate(
+      used = coalesce(used, FALSE),
+      Sensor_File = map_chr(Sensor_Files, function(files) {
+        if (is.null(files) || length(files) == 0 || all(is.na(files))) return(NA_character_)
+        paste(files, collapse = "; ")
+      }),
+      Actual_Sensor = map_chr(Sensor_Files, function(files) {
+        if (is.null(files) || length(files) == 0 || all(is.na(files))) return(NA_character_)
+        ids <- unique(na.omit(sapply(files, identify_sensor_id)))
+        if (length(ids) == 0) return(NA_character_)
+        ids[1]
+      }),
+      Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor),
+      Sleep_Duration = format_hours_minutes(Sleep_Duration)
+    ) %>%
+    select(Date, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
+    mutate(Date_Str = format(Date, "%d.%m.%Y"))
+}
+
 resolve_sleep_col <- function(mapping, hdr, key, alt_key = NULL) {
   col <- NULL
   if (!is.null(mapping[[key]]) && mapping[[key]] %in% hdr) col <- mapping[[key]]
@@ -2036,191 +2069,183 @@ if (length(dup_dates) > 0) {
 
 
 
-# build a review data frame summarizing all inputs per night
-# contains original sleep source file, sensor file(s), calendar sensor/flags, and final averages
-nightly_review_df <- temp_mapped %>%
-  mutate(
-    Sleep_Source = Source_File,
-    Sleep_Name = ifelse(str_detect(canonical_basename(Source_File), regex("schlaf", ignore_case = TRUE)),
-                         "Sleep",
-                         canonical_basename(Source_File)),
-    # when a calendar sensor is specified we only show the files that belong
-    # to that sensor; otherwise list whatever was available
-    Sensor_Sources = map2_chr(Sensor_Files, Sensor, function(files, sensor) {
-      if(!is.na(sensor)) {
-        sel <- files[sapply(files, identify_sensor_id) == sensor]
-        if(length(sel) > 0) return(paste(sel, collapse = "; "))
-      }
-      paste(files, collapse = "; ")
-    }),
-    Actual_Sensor = map_chr(Sensor_Files, function(files) {
-      if (length(files) == 0) return(NA_character_)
-      ids <- unique(na.omit(sapply(files, identify_sensor_id)))
-      if (length(ids) == 0) return(NA_character_)
-      ids[1]
-    }),
-    # the name we show should reflect the sensor that was actually used.
-    # If the calendar assignment exists, it should agree with the actual file.
-    Sensor_Names = case_when(
-      !is.na(Actual_Sensor) ~ Actual_Sensor,
-      !is.na(Sensor) ~ Sensor,
-      !is.na(Sensor_Raw) ~ paste0("(raw: ", Sensor_Raw, ")"),
-      TRUE ~ map_chr(Sensor_Names, ~ paste(.x, collapse = "; "))
+report_nightly_review <- function(temp_mapped) {
+  review_df <- temp_mapped %>%
+    transmute(
+      Date,
+      Sensor,
+      Sensor_Files,
+      Source_File,
+      Sensor_Names_Raw = Sensor_Names,
+      Sleep_Source = Source_File,
+      Sleep_Name = ifelse(
+        str_detect(canonical_basename(Source_File), regex("schlaf", ignore_case = TRUE)),
+        "Sleep",
+        canonical_basename(Source_File)
+      ),
+      Actual_Sensor = map_chr(Sensor_Files, function(files) {
+        if (is.null(files) || length(files) == 0 || all(is.na(files))) return(NA_character_)
+        ids <- unique(na.omit(sapply(files, identify_sensor_id)))
+        if (length(ids) == 0) return(NA_character_)
+        ids[1]
+      }),
+      Sensor_Names = case_when(
+        !is.na(Actual_Sensor) ~ Actual_Sensor,
+        !is.na(Sensor) ~ Sensor,
+        !is.na(Sensor_Raw) ~ paste0("(raw: ", Sensor_Raw, ")"),
+        TRUE ~ map_chr(Sensor_Names_Raw, ~ paste(.x, collapse = "; "))
+      )
     )
-  )
-# simple audit: how many distinct files and canonical names contribute
-cat(sprintf("Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n", 
-            nrow(nightly_review_df),
-            n_distinct(nightly_review_df$Sleep_Source),
-            n_distinct(nightly_review_df$Sleep_Name),
-            n_distinct(unlist(nightly_review_df$Sensor_Files)),
-            n_distinct(unlist(nightly_review_df$Sensor_Names))))
 
-mismatch_df <- nightly_review_df %>% filter(!is.na(Sensor) & !is.na(Actual_Sensor) & Sensor != Actual_Sensor)
-if (nrow(mismatch_df) > 0) {
-  cat(sprintf("Warning: %d nights with calendar sensor != actual sensor used:\n", nrow(mismatch_df)))
-  for (i in seq_len(nrow(mismatch_df))) {
-    row <- mismatch_df[i, ]
-    cat(sprintf("  %s: calendar=%s actual=%s files=%s\n",
-                format(row$Date), row$Sensor, row$Actual_Sensor,
-                paste(unlist(row$Sensor_Files), collapse = "; ")))
+  cat(sprintf(
+    "Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n",
+    nrow(review_df),
+    n_distinct(review_df$Sleep_Source),
+    n_distinct(review_df$Sleep_Name),
+    n_distinct(unlist(review_df$Sensor_Files)),
+    n_distinct(unlist(review_df$Sensor_Names))
+  ))
+
+  mismatch_df <- review_df %>% filter(!is.na(Sensor) & !is.na(Actual_Sensor) & Sensor != Actual_Sensor)
+  if (nrow(mismatch_df) > 0) {
+    cat(sprintf("Warning: %d nights with calendar sensor != actual sensor used:\n", nrow(mismatch_df)))
+    for (i in seq_len(nrow(mismatch_df))) {
+      row <- mismatch_df[i, ]
+      cat(sprintf(
+        "  %s: calendar=%s actual=%s files=%s\n",
+        format(row$Date),
+        row$Sensor,
+        row$Actual_Sensor,
+        paste(unlist(row$Sensor_Files), collapse = "; ")
+      ))
+    }
   }
 }
 
-final_data_matched <- temp_mapped %>% 
+report_nightly_review(temp_mapped)
+
+analysis_df <- temp_mapped %>%
   filter(
     (!is.na(Avg_Temp) & !is.nan(Avg_Temp)) |
       (!is.na(Avg_Rel_Hum) & !is.nan(Avg_Rel_Hum)) |
       (!is.na(Avg_Abs_Hum) & !is.nan(Avg_Abs_Hum))
   )
 
-n_before_analysis_filter <- nrow(final_data_matched)
+n_before_analysis_filter <- nrow(analysis_df)
 # if CLI supplied a date range, trim the results accordingly
 if (!is.null(cli_filter) && !is.null(cli_filter$date_start)) {
   cat(sprintf("Applying date filter %s -> %s\n", cli_filter$date_start, cli_filter$date_end))
-  final_data_matched <- final_data_matched %>%
+  analysis_df <- analysis_df %>%
     filter(Date >= cli_filter$date_start & Date <= cli_filter$date_end)
 }
 
-outlier_result <- apply_outlier_filter(final_data_matched, config$outlier_filter)
-excluded_outlier_dates_dates <- outlier_result$excluded
-final_data_outlier_meta <- outlier_result$all
-final_data_matched <- outlier_result$data
-final_data_viz_source <- outlier_result$all %>%
-  select(-any_of(c("Outlier_Columns", "Self_Outlier_Columns", "Value_Outlier_Columns")))
+outlier_result <- apply_outlier_filter(analysis_df, config$outlier_filter)
+analysis_df <- outlier_result$data
 
-n_before_analysis_filter_post_outlier <- nrow(final_data_matched)
-final_data_matched <- apply_analysis_subset_filter(final_data_matched, config$analysis_filter)
-n_after_analysis_filter <- nrow(final_data_matched)
-final_data_used_dates <- final_data_matched %>%
-  distinct(Date) %>%
-  mutate(used = TRUE)
+n_before_analysis_filter_post_outlier <- nrow(analysis_df)
+analysis_df <- apply_analysis_subset_filter(analysis_df, config$analysis_filter)
+n_after_analysis_filter <- nrow(analysis_df)
 
 if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
   cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter_post_outlier))
 }
 
-if(nrow(final_data_viz_source) > 0) {
-  full_dates <- seq(min(final_data_viz_source$Date, na.rm=T), max(final_data_viz_source$Date, na.rm=T), by="1 day")
-  # complete() fills in any missing dates.  The script now de-duplicates
-  # sleep records earlier, so duplicates should not normally reach this point,
-  # but we still guard against them here to avoid the dashboard showing a date
-  # twice.  Keep the first appearance if multiple rows slip through.
-  final_data_viz <- final_data_viz_source %>%
-    complete(Date = full_dates) %>%
-    distinct(Date, .keep_all = TRUE) %>%
-    left_join(final_data_used_dates, by = "Date") %>%
-    mutate(used = coalesce(used, FALSE))
-} else {
-  full_dates <- as.Date(character(0))
-  final_data_viz <- final_data_viz_source
-  final_data_viz$used <- logical(0)
-}
+dashboard_df <- build_dashboard_df(outlier_result$all, analysis_df, selected_metrics)
 
-# --- EXCLUDE: Define reasons (Missing Sleep, Missing Room) ---
-excluded_sleep_dates <- sleep_complete %>% 
-  filter(is.na(Sleep_Score) | is.na(HRV) | is.na(RHR)) %>% 
-  pull(Date)
+report_nightly_exclusions <- function(sleep_complete, temp_mapped, excluded_outlier_dates_dates, n_before_analysis_filter, n_after_analysis_filter) {
+  excluded_sleep_dates <- sleep_complete %>%
+    filter(is.na(Sleep_Score) | is.na(HRV) | is.na(RHR)) %>%
+    pull(Date)
 
-excluded_sensor_dates <- temp_mapped %>% 
-  filter(
-    (is.na(Avg_Temp) | is.nan(Avg_Temp)) &
-      (is.na(Avg_Rel_Hum) | is.nan(Avg_Rel_Hum)) &
-      (is.na(Avg_Abs_Hum) | is.nan(Avg_Abs_Hum))
-  ) %>% 
-  pull(Date)
+  excluded_sensor_dates <- temp_mapped %>%
+    filter(
+      (is.na(Avg_Temp) | is.nan(Avg_Temp)) &
+        (is.na(Avg_Rel_Hum) | is.nan(Avg_Rel_Hum)) &
+        (is.na(Avg_Abs_Hum) | is.nan(Avg_Abs_Hum))
+    ) %>%
+    pull(Date)
 
-# Nights that are missing room data (no filtering has been applied)
-# Unique total excluded nights across all reasons
-unique_excluded_dates <- unique(c(excluded_sleep_dates, excluded_sensor_dates))
+  n_unique_sleep_dates <- n_distinct(sleep_complete$Date)
+  n_excluded_sleep <- length(excluded_sleep_dates)
+  n_excluded_sensor <- length(excluded_sensor_dates)
+  n_excluded_outlier <- length(excluded_outlier_dates_dates)
+  n_filtered_out <- n_before_analysis_filter - n_after_analysis_filter
 
-# Format for printing
-excluded_sleep_fmt <- format(excluded_sleep_dates, "%d.%m.%Y")
-excluded_sensor_fmt <- format(excluded_sensor_dates, "%d.%m.%Y")
-
-n_unique_sleep_dates <- n_distinct(sleep_complete$Date)
-n_excluded_sleep <- length(excluded_sleep_dates)
-n_excluded_sensor <- length(excluded_sensor_dates)
-n_excluded_outlier <- length(excluded_outlier_dates_dates)
-n_filtered_out <- n_before_analysis_filter - n_after_analysis_filter
-
-cat("\n=== NIGHTLY DATA SUMMARY ===\n")
-cat(sprintf("Total unique sleep dates discovered: %d\n", n_unique_sleep_dates))
-cat(sprintf("Excluded due to missing sleep data: %d\n", n_excluded_sleep))
-cat(sprintf("Excluded due to missing sensor data: %d\n", n_excluded_sensor))
-cat(sprintf("Excluded due to outlier filtering: %d\n", n_excluded_outlier))
-cat(sprintf("Nights considered for analysis before filters: %d\n", n_before_analysis_filter))
-cat(sprintf("Nights kept after filter application: %d\n", n_after_analysis_filter))
-if (n_filtered_out > 0) {
-  cat(sprintf("Nights removed by date/analysis filters: %d\n", n_filtered_out))
-}
-cat("\n")
-
-if (n_after_analysis_filter > 0) {
-  format_ci_value <- function(x) {
-    if (is.na(x)) return(NA_character_)
-    s <- format(round(x, 2), nsmall = 2, trim = TRUE)
-    sub("\\.?0+$", "", s)
+  cat("\n=== NIGHTLY DATA SUMMARY ===\n")
+  cat(sprintf("Total unique sleep dates discovered: %d\n", n_unique_sleep_dates))
+  cat(sprintf("Excluded due to missing sleep data: %d\n", n_excluded_sleep))
+  cat(sprintf("Excluded due to missing sensor data: %d\n", n_excluded_sensor))
+  cat(sprintf("Excluded due to outlier filtering: %d\n", n_excluded_outlier))
+  cat(sprintf("Nights considered for analysis before filters: %d\n", n_before_analysis_filter))
+  cat(sprintf("Nights kept after filter application: %d\n", n_after_analysis_filter))
+  if (n_filtered_out > 0) {
+    cat(sprintf("Nights removed by date/analysis filters: %d\n", n_filtered_out))
   }
+  cat("\n")
+}
 
-  summarize_metric <- function(df, col) {
-    df <- filter_outlier_rows_for_metric(df, col)
-    vals <- df[[col]]
-    vals <- vals[!is.na(vals)]
-    if (length(vals) == 0) {
+report_nightly_statistics <- function(analysis_df, selected_metrics, summary_interval_lower, summary_interval_upper, summary_interval_label) {
+  if (nrow(analysis_df) > 0) {
+    format_ci_value <- function(x) {
+      if (is.na(x)) return(NA_character_)
+      s <- format(round(x, 2), nsmall = 2, trim = TRUE)
+      sub("\\.?0+$", "", s)
+    }
+
+    summarize_metric <- function(df, col) {
+      df <- filter_outlier_rows_for_metric(df, col)
+      vals <- df[[col]]
+      vals <- vals[!is.na(vals)]
+      if (length(vals) == 0) {
+        out <- tibble(
+          metric = col,
+          mean = NA_character_,
+          median = NA_character_,
+          std_dev = NA_character_
+        )
+        out[[summary_interval_label]] <- NA_character_
+        return(out)
+      }
+      n <- length(vals)
+      mean_val <- mean(vals)
+      sd_val <- if (n > 1) sd(vals) else NA_real_
+      q_bounds <- quantile(vals, c(summary_interval_lower, summary_interval_upper), na.rm = TRUE, type = 7)
+      format_val <- if (col == "Sleep_Duration") format_hours_minutes else format_ci_value
       out <- tibble(
         metric = col,
-        mean = NA_character_,
-        median = NA_character_,
-        std_dev = NA_character_
+        mean = format_val(mean_val),
+        median = format_val(median(vals)),
+        std_dev = ifelse(is.na(sd_val), NA_character_, format_val(sd_val))
       )
-      out[[summary_interval_label]] <- NA_character_
-      return(out)
+      out[[summary_interval_label]] <- sprintf("[%s;%s]",
+        format_val(q_bounds[[1]]),
+        format_val(q_bounds[[2]]))
+      out
     }
-    n <- length(vals)
-    mean_val <- mean(vals)
-    sd_val <- if (n > 1) sd(vals) else NA_real_
-    q_bounds <- quantile(vals, c(summary_interval_lower, summary_interval_upper), na.rm = TRUE, type = 7)
-    format_val <- if (col == "Sleep_Duration") format_hours_minutes else format_ci_value
-    out <- tibble(
-      metric = col,
-      mean = format_val(mean_val),
-      median = format_val(median(vals)),
-      std_dev = ifelse(is.na(sd_val), NA_character_, format_val(sd_val))
-    )
-    out[[summary_interval_label]] <- sprintf("[%s;%s]",
-      format_val(q_bounds[[1]]),
-      format_val(q_bounds[[2]]))
-    out
+
+    stats_df <- map_dfr(selected_metrics, summarize_metric, df = analysis_df)
+    cat("\nStatistics for used nights:\n\n")
+    print(stats_df)
+    cat("\n\n")
+  } else {
+    cat("\nNo nights remain after filtering; summary statistics unavailable.\n\n\n\n")
   }
-  stat_cols <- selected_metrics
-  stats_df <- map_dfr(stat_cols, summarize_metric, df = final_data_matched)
-  cat("\nStatistics for used nights:\n\n")
-  print(stats_df)
-  cat("\n\n")
-} else {
-  cat("\nNo nights remain after filtering; summary statistics unavailable.\n\n\n\n")
 }
+
+report_nightly_exclusions(
+  sleep_complete,
+  temp_mapped,
+  outlier_result$excluded,
+  n_before_analysis_filter,
+  n_after_analysis_filter
+)
+report_nightly_statistics(
+  analysis_df,
+  selected_metrics,
+  summary_interval_lower,
+  summary_interval_upper,
+  summary_interval_label
+)
 
 # --- Plot helper functions (extracted so the same logic can be called twice) ---
 # Define biomarker variables (sleep quality indicators)
@@ -2238,14 +2263,14 @@ metric_colors <- unname(sapply(metric_list, function(m) {
   plot_cfg$metric_colors[[m]] %||% "black"
 }))
 
-plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, dry_run) {
-  if (!"used" %in% names(data_viz)) {
-    data_viz <- mutate(data_viz, used = TRUE)
+plot_individual_timelines <- function(dashboard_df, metric_list, metric_colors, metric_labels, dry_run) {
+  if (!"used" %in% names(dashboard_df)) {
+    dashboard_df <- mutate(dashboard_df, used = TRUE)
   }
   for(i in seq_along(metric_list)) {
     m <- metric_list[i]
     tryCatch({
-      p <- ggplot(data_viz, aes(x = Date, y = .data[[m]])) +
+      p <- ggplot(dashboard_df, aes(x = Date, y = .data[[m]])) +
         geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
         geom_point(aes(color = used), size = 2, na.rm = TRUE) +
         scale_color_manual(
@@ -2276,7 +2301,7 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
   }
 }
 
-plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run) {
+plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run) {
   # Individual Scatter Plots
   for(env_name in names(env_analysis_vars)) {
     e_col <- env_analysis_vars[[env_name]]$col
@@ -2284,7 +2309,7 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
     for(m in bio_vars) {
       opt <- optima_storage[[paste0(env_name, "_", m)]]
       tryCatch({
-        sub <- data_matched %>% filter_outlier_rows_for_metric(e_col) %>% filter_outlier_rows_for_metric(m) %>%
+        sub <- analysis_df %>% filter_outlier_rows_for_metric(e_col) %>% filter_outlier_rows_for_metric(m) %>%
           filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
         p <- ggplot(sub, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_point(alpha = 0.5, color = "darkgrey") +
@@ -2323,7 +2348,7 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
       opt <- optima_storage[[paste0(env_name, "_", m)]]
 
       matrix_plots[[plot_index]] <- tryCatch({
-        sub_mat <- data_matched %>% filter_outlier_rows_for_metric(e_col) %>% filter_outlier_rows_for_metric(m) %>%
+        sub_mat <- analysis_df %>% filter_outlier_rows_for_metric(e_col) %>% filter_outlier_rows_for_metric(m) %>%
           filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
         p_mat <- ggplot(sub_mat, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
@@ -2384,7 +2409,7 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
   }
 }
 
-run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis_vars, metric_list, metric_colors, metric_labels, optima_storage, bio_vars, dry_run) {
+run_plot_pass <- function(mode, dashboard_df, analysis_df, env_analysis_vars, metric_list, metric_colors, metric_labels, optima_storage, bio_vars, dry_run) {
   if (mode != "browser") {
     reset_graphics_environment()
   }
@@ -2434,9 +2459,9 @@ run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis
   render_error <- NULL
   tryCatch({
     if (!dry_run) {
-      plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, dry_run)
+      plot_individual_timelines(dashboard_df, metric_list, metric_colors, metric_labels, dry_run)
       plot_scatter_and_matrix(
-        final_data_matched,
+        analysis_df,
         env_analysis_vars,
         metric_list,
         metric_colors,
@@ -2476,24 +2501,6 @@ run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis
   invisible(browser_viewer_url)
 }
 
-dashboard_df <- final_data_viz %>%
-  filter(!is.na(Date)) %>%
-  # Sensor_Files is a list-column; convert to semicolon-separated string for
-  # ease of display.  Use Sensor_Names if you prefer canonical names instead.
-  mutate(
-    Sensor_File = map_chr(Sensor_Files, ~ paste(.x, collapse = "; ")),
-    Actual_Sensor = map_chr(Sensor_Files, function(files) {
-      if (is.null(files) || length(files) == 0) return(NA_character_)
-      ids <- unique(na.omit(sapply(files, identify_sensor_id)))
-      if (length(ids) == 0) return(NA_character_)
-      ids[1]
-    }),
-    Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
-  ) %>%
-  mutate(Sleep_Duration = format_hours_minutes(Sleep_Duration)) %>%
-  select(Date, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
-  mutate(Date_Str = format(Date, "%d.%m.%Y"))
-
 all_env_analysis_vars <- list(
   "Room Temp" = list(col="Avg_Temp", unit="°C"),
   "Room Temp SD" = list(col="Temp_SD", unit="°C"),
@@ -2507,22 +2514,30 @@ if (length(env_analysis_vars) == 0) {
   warning("No environmental analysis metrics selected; impact analysis will be skipped.")
 }
 
+prepare_model_subset <- function(df, e_col, m) {
+  sub <- df %>%
+    filter_outlier_rows_for_metric(e_col) %>%
+    filter_outlier_rows_for_metric(m) %>%
+    filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
+  if (nrow(sub) < 5) return(NULL)
+  sub_model <- sub
+  if (m == "RHR") {
+    sub_model[[m]] <- -sub_model[[m]]
+  }
+  list(sub = sub, sub_model = sub_model)
+}
+
 optima_storage <- list()
 for(env_name in names(env_analysis_vars)) {
   e_col <- env_analysis_vars[[env_name]]$col
   e_unit <- env_analysis_vars[[env_name]]$unit
   cat(sprintf("\n>>> IMPACT OF %s:\n", toupper(env_name)))
   for(m in bio_vars) {
-    sub <- final_data_matched %>%
-      filter_outlier_rows_for_metric(e_col) %>%
-      filter_outlier_rows_for_metric(m) %>%
-      filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
-    if (nrow(sub) < 5) next
+    model_subset <- prepare_model_subset(analysis_df, e_col, m)
+    if (is.null(model_subset)) next
 
-    sub_model <- sub
-    if (m == "RHR") {
-      sub_model[[m]] <- -sub_model[[m]] # Invert for peak
-    }
+    sub <- model_subset$sub
+    sub_model <- model_subset$sub_model
 
     fit_poly <- lm(
       as.formula(paste(m, "~ poly(", e_col, ", 2, raw=TRUE)")),
@@ -2564,8 +2579,8 @@ cat("===========================================================\n")
 for (mode in run_modes) {
   run_plot_pass(
     mode,
-    final_data_viz,
-    final_data_matched,
+    dashboard_df,
+    analysis_df,
     env_analysis_vars,
     metric_list,
     metric_colors,
