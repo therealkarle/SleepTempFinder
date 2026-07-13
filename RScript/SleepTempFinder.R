@@ -94,6 +94,8 @@ theme_minimal <- ggplot2::theme_minimal
 theme_void <- ggplot2::theme_void
 tibble <- tibble::tibble
 
+ggplot2::theme_set(theme_minimal(base_family = ""))
+
 use_future <- FALSE
 if (requireNamespace("future", quietly = TRUE) && requireNamespace("furrr", quietly = TRUE)) {
   use_future <- TRUE
@@ -278,44 +280,50 @@ resolve_plot_output_dir <- function(path_value) {
 
 plot_output_dir <- resolve_plot_output_dir(plot_export_dir_cfg)
 
-resolve_plot_font_family <- function() {
-  current_family <- tryCatch(par("family"), error = function(e) "")
-  if (!is.null(current_family) && nzchar(current_family[1])) {
-    return(current_family[1])
-  }
-
-  current_device <- tryCatch(grDevices::dev.cur(), error = function(e) NA_integer_)
-  if (!is.na(current_device) && current_device > 1L) {
-    device_name <- tryCatch({
-      device_list <- grDevices::dev.list()
-      if (is.null(device_list)) {
-        ""
-      } else {
-        device_names <- names(device_list)
-        match_index <- match(as.character(current_device), device_names)
-        if (is.na(match_index)) "" else device_names[match_index]
-      }
-    }, error = function(e) "")
-    if (nzchar(device_name)) {
-      return("sans")
+reset_graphics_environment <- function() {
+  tryCatch({
+    open_devices <- grDevices::dev.list()
+    if (is.null(open_devices) || length(open_devices) == 0L) {
+      return(invisible(NULL))
     }
-  }
+    grDevices::graphics.off()
+    invisible(NULL)
+  }, error = function(e) {
+    warning("Failed to reset graphics devices: ", conditionMessage(e), call. = FALSE)
+    invisible(NULL)
+  })
+}
 
-  configured_family <- NULL
-  if (exists("plot_cfg", inherits = TRUE) && !is.null(plot_cfg)) {
-    configured_family <- plot_cfg$font_family
-    if (is.null(configured_family) || !nzchar(as.character(configured_family)[1])) {
-      configured_family <- plot_cfg$base_family
-    }
-    if (is.null(configured_family) || !nzchar(as.character(configured_family)[1])) {
-      configured_family <- plot_cfg$plot_font_family
-    }
+drop_plot_objects <- function(...) {
+  object_names <- intersect(c(...), ls())
+  if (length(object_names) > 0L) {
+    rm(list = object_names, inherits = FALSE)
   }
-  if (!is.null(configured_family) && nzchar(as.character(configured_family)[1])) {
-    return(as.character(configured_family)[1])
-  }
+  invisible(NULL)
+}
 
-  "sans"
+build_plot_error_fallback <- function(mode, error_message) {
+  wrapped_message <- paste(
+    c(
+      "Plot rendering failed.",
+      paste0("Mode: ", mode),
+      strwrap(error_message, width = 90)
+    ),
+    collapse = "\n"
+  )
+
+  ggplot() +
+    theme_void(base_family = "") +
+    ggplot2::annotation_custom(
+      grob = textGrob(
+        wrapped_message,
+        gp = gpar(fontsize = 11, fontfamily = "", col = "red3")
+      ),
+      xmin = -Inf,
+      xmax = Inf,
+      ymin = -Inf,
+      ymax = Inf
+    )
 }
 
 close_graphics_device <- function(device_id) {
@@ -2222,7 +2230,7 @@ metric_colors <- unname(sapply(metric_list, function(m) {
   plot_cfg$metric_colors[[m]] %||% "black"
 }))
 
-plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, plot_font_family, dry_run) {
+plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, dry_run) {
   if (!"used" %in% names(data_viz)) {
     data_viz <- mutate(data_viz, used = TRUE)
   }
@@ -2239,12 +2247,12 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
         ) +
         scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
         labs(title = metric_labels[i], x = NULL, y = NULL) +
-        theme_minimal(base_size = 12, base_family = plot_font_family) +
+        theme_minimal(base_size = 12, base_family = "") +
         theme(
-          text = element_text(family = plot_font_family),
-          axis.text.x = element_text(angle = 45, hjust = 1, family = plot_font_family),
+          text = element_text(family = ""),
+          axis.text.x = element_text(angle = 45, hjust = 1, family = ""),
           panel.grid.minor.x = element_line(color = "grey90"),
-          plot.title = element_text(face = "bold", color = metric_colors[i], family = plot_font_family),
+          plot.title = element_text(face = "bold", color = metric_colors[i], family = ""),
           plot.margin = margin(10, 10, 20, 10)
         )
       save_plot_image(p, slugify_plot_name("timeline", sprintf("%02d", i), m), width = 8.5, height = 5.5)
@@ -2252,13 +2260,14 @@ plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metr
         suppressWarnings(print(p))
         if (interactive()) try(graphics::dev.flush(), silent = TRUE)
       }
+      drop_plot_objects("p")
     }, error = function(e) {
       warning(sprintf("Failed to create timeline plot for %s: %s\n", m, conditionMessage(e)))
     })
   }
 }
 
-plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, plot_font_family, dry_run) {
+plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list, metric_colors, optima_storage, bio_vars, dry_run) {
   # Individual Scatter Plots
   for(env_name in names(env_analysis_vars)) {
     e_col <- env_analysis_vars[[env_name]]$col
@@ -2272,17 +2281,18 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
           geom_point(alpha = 0.5, color = "darkgrey") +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = metric_colors[match(m, metric_list)], linewidth = 1.2) +
           labs(title = paste(m, "vs", env_name), x = paste(env_name, e_unit), y = m) +
-          theme_minimal(base_family = plot_font_family) +
-          theme(text = element_text(family = plot_font_family))
+          theme_minimal(base_family = "") +
+          theme(text = element_text(family = ""))
         if(!is.null(opt)) {
           p <- p + geom_vline(xintercept = opt, linetype = "dashed") +
-            annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold", family = plot_font_family)
+            annotate("text", x = opt, y = Inf, label = paste0(round(opt, 1), e_unit), vjust = 2, fontface = "bold", family = "")
         }
         save_plot_image(p, slugify_plot_name("scatter", env_name, m), width = 7.5, height = 5.5)
         if(!dry_run) {
           suppressWarnings(print(p))
           if (interactive()) try(graphics::dev.flush(), silent = TRUE)
         }
+        drop_plot_objects("sub", "p")
       }, error = function(e) {
         warning(sprintf("Failed to create scatter plot for %s vs %s: %s\n", m, env_name, conditionMessage(e)))
       })
@@ -2307,20 +2317,23 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
           filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
         p_mat <- ggplot(sub_mat, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
-          theme_minimal(base_size = 8) +
+          theme_minimal(base_size = 8, base_family = "") +
           labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
-          theme(plot.title = element_text(size = 7, face = "bold"))
+          theme(
+            text = element_text(family = ""),
+            plot.title = element_text(size = 7, face = "bold", family = "")
+          )
 
         if(!is.null(opt)) {
           p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
         }
 
         if(!is.null(p_mat) && inherits(p_mat, "ggplot")) p_mat else {
-          ggplot() + geom_blank() + theme_void() + labs(title = paste(m, "x", env_name, "(no data)"))
+          ggplot() + geom_blank() + theme_void(base_family = "") + labs(title = paste(m, "x", env_name, "(no data)"))
         }
       }, error = function(e) {
         warning(sprintf("Failed to create matrix plot for %s x %s: %s\n", m, env_name, conditionMessage(e)))
-        ggplot() + geom_blank() + theme_void() + labs(title = paste(m, "x", env_name, "(missing)"))
+        ggplot() + geom_blank() + theme_void(base_family = "") + labs(title = paste(m, "x", env_name, "(missing)"))
       })
 
       plot_index <- plot_index + 1
@@ -2330,12 +2343,13 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
   # Only render matrix dashboard if we have valid plots
   if(length(matrix_plots) > 0) {
     tryCatch({
+      gc()
+      drop_plot_objects("p", "sub", "p_mat", "sub_mat")
       matrix_dashboard <- gridExtra::arrangeGrob(
         grobs = matrix_plots,
         ncol = num_cols,
-        top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2, fontfamily = plot_font_family))
+        top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2, fontfamily = ""))
       )
-      invisible(gc())
       save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
       if(!dry_run) {
         tryCatch({
@@ -2357,6 +2371,7 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
 }
 
 run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis_vars, metric_list, metric_colors, metric_labels, optima_storage, bio_vars, dry_run) {
+  reset_graphics_environment()
   previous_plot_options <- options(
     r.plot.useHttpgd = getOption("r.plot.useHttpgd"),
     vsc.plot.useHttpgd = getOption("vsc.plot.useHttpgd"),
@@ -2400,20 +2415,51 @@ run_plot_pass <- function(mode, final_data_viz, final_data_matched, env_analysis
     browser_viewer_url <- NULL
   }
 
-  plot_font_family <- resolve_plot_font_family()
+  render_error <- NULL
+  tryCatch({
+    if (!dry_run) {
+      plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, dry_run)
+      plot_scatter_and_matrix(
+        final_data_matched,
+        env_analysis_vars,
+        metric_list,
+        metric_colors,
+        optima_storage,
+        bio_vars,
+        dry_run
+      )
+    }
 
-  if (!dry_run) {
-    plot_individual_timelines(final_data_viz, metric_list, metric_colors, metric_labels, plot_font_family, dry_run)
-    plot_scatter_and_matrix(
-      final_data_matched,
-      env_analysis_vars,
-      metric_list,
-      metric_colors,
-      optima_storage,
-      bio_vars,
-      plot_font_family,
-      dry_run
-    )
+    if (mode == "browser" && !is.null(browser_viewer_url)) {
+      tryCatch(
+        {
+          if (requireNamespace("httpgd", quietly = TRUE)) {
+            try(httpgd::hgd(), silent = TRUE)
+          }
+        },
+        error = function(e) warning("Failed to open browser viewer: ", conditionMessage(e), "\n")
+      )
+    }
+  }, error = function(e) {
+    render_error <<- e
+  })
+
+  if (!is.null(render_error)) {
+    warning("Plot rendering failed; continuing with fallback plot: ", conditionMessage(render_error), call. = FALSE)
+    fallback_plot <- build_plot_error_fallback(mode, conditionMessage(render_error))
+    tryCatch({
+      save_plot_image(
+        fallback_plot,
+        slugify_plot_name("plot", "render", "failed", mode),
+        width = 10,
+        height = 6
+      )
+      if (!dry_run) {
+        suppressWarnings(print(fallback_plot))
+      }
+    }, error = function(fallback_error) {
+      warning("Fallback plot rendering also failed: ", conditionMessage(fallback_error), call. = FALSE)
+    })
   }
 
   if (mode == "browser" && !is.null(browser_viewer_url)) {
