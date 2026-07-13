@@ -2036,27 +2036,35 @@ outlier_result <- apply_outlier_filter(final_data_matched, config$outlier_filter
 excluded_outlier_dates_dates <- outlier_result$excluded
 final_data_outlier_meta <- outlier_result$all
 final_data_matched <- outlier_result$data
+final_data_viz_source <- outlier_result$all %>%
+  select(-any_of(c("Outlier_Columns", "Self_Outlier_Columns", "Value_Outlier_Columns")))
 
 n_before_analysis_filter_post_outlier <- nrow(final_data_matched)
 final_data_matched <- apply_analysis_subset_filter(final_data_matched, config$analysis_filter)
 n_after_analysis_filter <- nrow(final_data_matched)
+final_data_used_dates <- final_data_matched %>%
+  distinct(Date) %>%
+  mutate(used = TRUE)
 
 if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
   cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter_post_outlier))
 }
 
-if(nrow(final_data_matched) > 0) {
-  full_dates <- seq(min(final_data_matched$Date, na.rm=T), max(final_data_matched$Date, na.rm=T), by="1 day")
+if(nrow(final_data_viz_source) > 0) {
+  full_dates <- seq(min(final_data_viz_source$Date, na.rm=T), max(final_data_viz_source$Date, na.rm=T), by="1 day")
   # complete() fills in any missing dates.  The script now de-duplicates
   # sleep records earlier, so duplicates should not normally reach this point,
   # but we still guard against them here to avoid the dashboard showing a date
   # twice.  Keep the first appearance if multiple rows slip through.
-  final_data_viz <- final_data_matched %>%
+  final_data_viz <- final_data_viz_source %>%
     complete(Date = full_dates) %>%
-    distinct(Date, .keep_all = TRUE)
+    distinct(Date, .keep_all = TRUE) %>%
+    left_join(final_data_used_dates, by = "Date") %>%
+    mutate(used = coalesce(used, FALSE))
 } else {
   full_dates <- as.Date(character(0))
-  final_data_viz <- final_data_matched
+  final_data_viz <- final_data_viz_source
+  final_data_viz$used <- logical(0)
 }
 
 # --- EXCLUDE: Define reasons (Missing Sleep, Missing Room) ---
@@ -2161,12 +2169,20 @@ metric_colors <- unname(sapply(metric_list, function(m) {
 }))
 
 plot_individual_timelines <- function(data_viz, metric_list, metric_colors, metric_labels, dry_run) {
+  if (!"used" %in% names(data_viz)) {
+    data_viz <- mutate(data_viz, used = TRUE)
+  }
   for(i in seq_along(metric_list)) {
     m <- metric_list[i]
     tryCatch({
       p <- ggplot(data_viz, aes(x = Date, y = .data[[m]])) +
         geom_line(color = metric_colors[i], linewidth = 1, na.rm = TRUE) +
-        geom_point(color = metric_colors[i], size = 2, na.rm = TRUE) +
+        geom_point(aes(color = used), size = 2, na.rm = TRUE) +
+        scale_color_manual(
+          values = c(`TRUE` = metric_colors[i], `FALSE` = "grey60"),
+          labels = c(`TRUE` = "used", `FALSE` = "filtered"),
+          name = NULL
+        ) +
         scale_x_date(date_labels = "%d.%m.%Y", breaks = "2 days", minor_breaks = "1 day", expand = expansion(mult = c(0.01, 0.01))) +
         labs(title = metric_labels[i], x = NULL, y = NULL) +
         theme_minimal(base_size = 12) +
@@ -2277,9 +2293,6 @@ plot_scatter_and_matrix <- function(data_matched, env_analysis_vars, metric_list
 
 dashboard_df <- final_data_viz %>%
   filter(!is.na(Date)) %>%
-  select(-any_of(c("Outlier_Columns", "Outlier_Reason"))) %>%
-  # Attach any outlier metadata for the day, if available.
-  left_join(select(final_data_outlier_meta, Date, Outlier_Reason), by = "Date") %>%
   # Sensor_Files is a list-column; convert to semicolon-separated string for
   # ease of display.  Use Sensor_Names if you prefer canonical names instead.
   mutate(
@@ -2293,7 +2306,7 @@ dashboard_df <- final_data_viz %>%
     Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor)
   ) %>%
   mutate(Sleep_Duration = format_hours_minutes(Sleep_Duration)) %>%
-  select(Date, Sensor, Flags, Sensor_File, any_of(selected_metrics), Outlier_Reason) %>%
+  select(Date, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
   mutate(Date_Str = format(Date, "%d.%m.%Y"))
 
 all_env_analysis_vars <- list(
