@@ -2131,28 +2131,29 @@ analysis_df <- temp_mapped %>%
       (!is.na(Avg_Abs_Hum) & !is.nan(Avg_Abs_Hum))
   )
 
-n_before_analysis_filter <- nrow(analysis_df)
+n_before_date_filter <- nrow(analysis_df)
 # if CLI supplied a date range, trim the results accordingly
 if (!is.null(cli_filter) && !is.null(cli_filter$date_start)) {
   cat(sprintf("Applying date filter %s -> %s\n", cli_filter$date_start, cli_filter$date_end))
   analysis_df <- analysis_df %>%
     filter(Date >= cli_filter$date_start & Date <= cli_filter$date_end)
 }
+n_after_date_filter <- nrow(analysis_df)
 
 outlier_result <- apply_outlier_filter(analysis_df, config$outlier_filter)
 analysis_df <- outlier_result$data
 
-n_before_analysis_filter_post_outlier <- nrow(analysis_df)
+n_before_analysis_filter <- nrow(analysis_df)
 analysis_df <- apply_analysis_subset_filter(analysis_df, config$analysis_filter)
 n_after_analysis_filter <- nrow(analysis_df)
 
 if(!is.null(config$analysis_filter) && isTRUE(config$analysis_filter$enabled)) {
-  cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter_post_outlier))
+  cat(sprintf("Analysis filter enabled: kept %d of %d nights\n", n_after_analysis_filter, n_before_analysis_filter))
 }
 
 dashboard_df <- build_dashboard_df(outlier_result$all, analysis_df, selected_metrics)
 
-report_nightly_exclusions <- function(sleep_complete, temp_mapped, excluded_outlier_dates_dates, n_before_analysis_filter, n_after_analysis_filter) {
+report_nightly_exclusions <- function(sleep_complete, temp_mapped, excluded_outlier_dates_dates, n_before_date_filter, n_after_date_filter, n_before_analysis_filter, n_after_analysis_filter) {
   excluded_sleep_dates <- sleep_complete %>%
     filter(is.na(Sleep_Score) | is.na(HRV) | is.na(RHR)) %>%
     pull(Date)
@@ -2169,7 +2170,8 @@ report_nightly_exclusions <- function(sleep_complete, temp_mapped, excluded_outl
   n_excluded_sleep <- length(excluded_sleep_dates)
   n_excluded_sensor <- length(excluded_sensor_dates)
   n_excluded_outlier <- length(excluded_outlier_dates_dates)
-  n_filtered_out <- n_before_analysis_filter - n_after_analysis_filter
+  # Count only date/analysis removals here; outliers are reported separately.
+  n_filtered_out <- (n_before_date_filter - n_after_date_filter) + (n_before_analysis_filter - n_after_analysis_filter)
 
   cat("\n=== NIGHTLY DATA SUMMARY ===\n")
   cat(sprintf("Total unique sleep dates discovered: %d\n", n_unique_sleep_dates))
@@ -2236,6 +2238,8 @@ report_nightly_exclusions(
   sleep_complete,
   temp_mapped,
   outlier_result$excluded,
+  n_before_date_filter,
+  n_after_date_filter,
   n_before_analysis_filter,
   n_after_analysis_filter
 )
