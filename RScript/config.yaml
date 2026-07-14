@@ -354,7 +354,7 @@ plot:
   # Set enabled to false to keep plots only in the active graphics device.
   # output_dir may be relative (resolved from RScript/) or absolute.
   export:
-    enabled: false
+    enabled: true
     output_dir: "../PlotOutput"
   metric_colors:
     room_temp: "#ff7f0e"    # orange

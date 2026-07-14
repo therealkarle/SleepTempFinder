@@ -2561,7 +2561,7 @@ for(env_name in names(env_analysis_vars)) {
     cat(sprintf(
       "    - P-Value: %.4f | R-Squared: %.1f%%\n",
       summary(fit_lin)$coefficients[2, 4],
-      summary(fit_poly)$adj.r.squared * 100
+      summary(fit_poly)$r.squared * 100
     ))
   }
 }
@@ -2571,7 +2571,7 @@ cat("             DETAILED STATISTICAL EXPLANATION\n")
 cat("===========================================================\n")
 cat("1. P-VALUE: < 0.05 indicates a statistically significant relationship.\n")
 cat("   (How likly is it that the result is pure chance)\n")
-cat("2. R-SQUARED: % of sleep variance explained by this environment factor.\n")
+cat("2. R-SQUARED: % of sleep variance explained by the fitted model.\n")
 cat("3. OPTIMUM: Calculated 'Sweet Spot' based on quadratic regression.\n")
 cat("===========================================================\n")
 
