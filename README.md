@@ -281,3 +281,10 @@ For each selected metric in the summary table:
 ---
 
 If you want, this README can also be extended with a dedicated CSV column reference or an example `config.private.yaml`.
+
+## Sleep Source
+
+- Default mode is `csv`.
+- Set `sleep_source.mode: api` to fetch sleep data from the Sleep Score Private API.
+- Configure `sleep_source.api.base_url`, `user_id` or `user_email`, and `bearer_token` in `RScript/config.private.yaml`.
+- Sensor and calendar data stay local; only the sleep input changes.

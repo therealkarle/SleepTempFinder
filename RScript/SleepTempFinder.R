@@ -19,7 +19,7 @@ if (!require("rstudioapi")) install.packages("rstudioapi")
 if (is.null(getOption("repos")) || getOption("repos")[[1]] == "@CRAN@") {
   options(repos = c(CRAN = "https://cloud.r-project.org"))
 }
-pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales", "future", "furrr")
+pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales", "future", "furrr", "jsonlite")
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) install.packages(pkg, dependencies = TRUE)
   library(pkg, character.only = TRUE)
@@ -170,6 +170,175 @@ if (file.exists(private_cfg_path)) {
 if (is.null(config$sensor_files) && !is.null(config$temp_files)) {
   config$sensor_files <- config$temp_files
   cat("Config warning: 'temp_files' renamed to 'sensor_files' for clarity\n")
+}
+
+# Sleep input can come from the legacy CSV scan or from the Sleep Score API.
+sleep_source_cfg <- config$sleep_source %||% list()
+sleep_source_mode <- tolower(trimws(as.character(sleep_source_cfg$mode %||% "csv")))
+if (!sleep_source_mode %in% c("csv", "api")) {
+  stop(sprintf("Invalid sleep_source.mode '%s'; expected 'csv' or 'api'.", sleep_source_mode))
+}
+sleep_api_cfg <- sleep_source_cfg$api %||% list()
+sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% "https://sleepscoreprivate.onrender.com"))
+if (nzchar(sleep_api_base_url)) {
+  sleep_api_base_url <- sub("/+$", "", sleep_api_base_url)
+}
+sleep_api_user_id <- trimws(as.character(sleep_api_cfg$user_id %||% ""))
+sleep_api_user_email <- trimws(as.character(sleep_api_cfg$user_email %||% ""))
+sleep_api_bearer_token <- trimws(as.character(sleep_api_cfg$bearer_token %||% Sys.getenv("API_INTERNAL_SECRET", unset = "")))
+
+normalize_api_name <- function(x) {
+  gsub("[^a-z0-9]+", "", tolower(as.character(x)))
+}
+
+find_first_api_column <- function(hdr, candidates) {
+  if (length(hdr) == 0 || length(candidates) == 0) return(NA_character_)
+  idx <- match(normalize_api_name(candidates), normalize_api_name(hdr))
+  idx <- idx[!is.na(idx)]
+  if (length(idx) == 0) return(NA_character_)
+  hdr[[idx[[1]]]]
+}
+
+rename_api_column <- function(df, target_name, candidates) {
+  if (is.null(target_name) || !nzchar(target_name)) return(df)
+  old_name <- find_first_api_column(names(df), candidates)
+  if (!is.na(old_name) && old_name != target_name) {
+    names(df)[names(df) == old_name] <- target_name
+  }
+  df
+}
+
+extract_api_rows <- function(payload) {
+  if (is.data.frame(payload)) {
+    return(as_tibble(payload, .name_repair = "unique"))
+  }
+  if (is.list(payload)) {
+    for (nm in c("entries", "data", "items", "rows", "sleep_entries")) {
+      candidate <- payload[[nm]]
+      if (is.data.frame(candidate)) {
+        return(as_tibble(candidate, .name_repair = "unique"))
+      }
+      if (is.list(candidate) && length(candidate) > 0) {
+        candidate_df <- tryCatch(bind_rows(candidate), error = function(e) NULL)
+        if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
+          return(as_tibble(candidate_df, .name_repair = "unique"))
+        }
+      }
+    }
+    candidate_df <- tryCatch(bind_rows(payload), error = function(e) NULL)
+    if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
+      return(as_tibble(candidate_df, .name_repair = "unique"))
+    }
+  }
+  tibble()
+}
+
+normalize_sleep_api_rows <- function(df, mapping) {
+  df <- as_tibble(df, .name_repair = "unique")
+  df <- rename_api_column(df, mapping$garmin_date, c(
+    "Date", "date", "sleep_date", "sleepDate", "view_date", "viewDate",
+    "night_date", "nightDate", "day", "sleepDay"
+  ))
+  df <- rename_api_column(df, mapping$garmin_bedtime, c(
+    "bedtime", "bed_time", "sleep_start", "sleepStart", "start_time",
+    "startTime", "start", "asleep_time", "sleep_begin", "sleepBegin"
+  ))
+  df <- rename_api_column(df, mapping$garmin_waketime, c(
+    "waketime", "wake_time", "wakeTime", "sleep_end", "sleepEnd",
+    "end_time", "endTime", "end", "wake_up_time", "wakeUpTime"
+  ))
+  df <- rename_api_column(df, mapping$garmin_sleep_score, c(
+    "Sleep_Score", "sleep_score", "sleepScore", "score", "sleepscore"
+  ))
+  df <- rename_api_column(df, mapping$garmin_hrv, c(
+    "HRV", "hrv", "hrv_status", "hrvStatus", "overnight_hrv", "overnightHrv",
+    "hrv_score"
+  ))
+  if (!is.null(mapping$garmin_hrv_alt)) {
+    df <- rename_api_column(df, mapping$garmin_hrv_alt, c(
+      "hrv_alt", "hrvAlt", "overnight_hrv_alt", "overnightHrvAlt", "avg_hrv", "avgHrv"
+    ))
+  }
+  df <- rename_api_column(df, mapping$garmin_rhr, c(
+    "RHR", "rhr", "resting_heart_rate", "restingHeartRate", "resting_hr"
+  ))
+  df <- rename_api_column(df, mapping$garmin_duration, c(
+    "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength"
+  ))
+  df
+}
+
+read_sleep_api <- function(mapping) {
+  if (!nzchar(sleep_api_bearer_token)) {
+    stop("sleep_source.api.bearer_token is required (or set API_INTERNAL_SECRET).")
+  }
+  if (!nzchar(sleep_api_user_id) && !nzchar(sleep_api_user_email)) {
+    stop("sleep_source.api.user_id or sleep_source.api.user_email is required.")
+  }
+
+  query_parts <- character(0)
+  if (nzchar(sleep_api_user_id)) {
+    query_parts <- c(query_parts, paste0("user_id=", URLencode(sleep_api_user_id, reserved = TRUE)))
+  }
+  if (nzchar(sleep_api_user_email)) {
+    query_parts <- c(query_parts, paste0("user_email=", URLencode(sleep_api_user_email, reserved = TRUE)))
+  }
+  query_parts <- c(query_parts, "mode=entries")
+
+  request_url <- paste0(
+    sleep_api_base_url,
+    "/api/users/sleep-export-data?",
+    paste(query_parts, collapse = "&")
+  )
+
+  con <- url(
+    request_url,
+    open = "rb",
+    headers = c(
+      paste0("Authorization: Bearer ", sleep_api_bearer_token),
+      "Accept: application/json"
+    )
+  )
+  on.exit(try(close(con), silent = TRUE), add = TRUE)
+
+  raw_text <- tryCatch(
+    readLines(con, warn = FALSE, encoding = "UTF-8"),
+    error = function(e) stop("Failed to read sleep API response: ", conditionMessage(e))
+  )
+  payload <- tryCatch(
+    jsonlite::fromJSON(paste(raw_text, collapse = "\n"), flatten = TRUE),
+    error = function(e) stop("Failed to parse sleep API JSON: ", conditionMessage(e))
+  )
+
+  rows <- extract_api_rows(payload)
+  if (nrow(rows) == 0) {
+    stop("Sleep API returned no export rows.")
+  }
+
+  rows <- normalize_sleep_api_rows(rows, mapping)
+  required_cols <- c(
+    mapping$garmin_date,
+    mapping$garmin_bedtime,
+    mapping$garmin_waketime,
+    mapping$garmin_sleep_score,
+    mapping$garmin_rhr
+  )
+  missing_cols <- setdiff(required_cols, names(rows))
+  if (length(missing_cols) > 0) {
+    stop("Sleep API export is missing required column(s): ", paste(missing_cols, collapse = ", "))
+  }
+
+  source_label <- if (nzchar(sleep_api_user_id)) {
+    paste0("api://user_id=", sleep_api_user_id)
+  } else {
+    paste0("api://user_email=", sleep_api_user_email)
+  }
+
+  rows %>%
+    mutate(
+      Source_File = source_label,
+      Source_Name = "Sleep Score Private API"
+    )
 }
 
 # determine the default sensor from sensor_files.default = true, falling back
@@ -1704,8 +1873,12 @@ classification <- local({
   cat("\n")
 
   # classify discovered files
-  sleep_candidates <- all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
   sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, sensor_files = config$sensor_files)]
+  sleep_candidates <- if (sleep_source_mode == "csv") {
+    all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
+  } else {
+    character(0)
+  }
   unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
   cat(sprintf("Sleep candidates: %d\n", length(sleep_candidates)))
   if (isTRUE(verbose) && length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
@@ -1729,7 +1902,11 @@ classification <- local({
   cat("\n")
 
   # expand explicit paths and merge with discovered names
-  explicit_sleep_raw <- file.path(config$data_directory, config$sleep_data_sources)
+  explicit_sleep_raw <- if (sleep_source_mode == "csv") {
+    file.path(config$data_directory, config$sleep_data_sources)
+  } else {
+    character(0)
+  }
   explicit_sensor_raw <- unlist(lapply(config$sensor_files, function(x) file.path(config$data_directory, x$path)))
   explicit_sleep <- expand_explicit(explicit_sleep_raw, all_data_files)
   explicit_sensor <- expand_explicit(explicit_sensor_raw, all_data_files)
@@ -1755,6 +1932,9 @@ all_sensor_files <- classification$all_sensor_files
 mapping <- config$column_names
 
 # read sleep data, track source file and canonical name per row
+sleep_df_raw <- if (sleep_source_mode == "api") {
+  read_sleep_api(mapping)
+} else {
 read_sleep_file <- function(f) {
   df <- read_garmin_fixed(f)
   hdr <- names(df)
@@ -1809,6 +1989,7 @@ sleep_df_raw <- if (use_future) {
   furrr::future_map_dfr(all_sleep_files, read_sleep_file)
 } else {
   map_df(all_sleep_files, read_sleep_file)
+}
 }
 
 # read all discovered sensor CSVs, track source file and attempt column renaming

@@ -3,6 +3,14 @@
 # you can optionally override scan behavior
 #scan_recursive: true
 
+# sleep_source:
+#   mode: "api"
+#   api:
+#     base_url: "https://sleepscoreprivate.onrender.com"
+#     user_id: ""
+#     user_email: ""
+#     bearer_token: ""
+
 calendar_source:
   enabled: true
   mode: "url" # or "file"
