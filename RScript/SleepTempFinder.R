@@ -276,6 +276,11 @@ read_sleep_api <- function(mapping) {
     stop("sleep_source.api.user_id or sleep_source.api.user_email is required.")
   }
 
+  # Render free-tier cold starts can take longer than the default 60s read timeout.
+  old_timeout <- getOption("timeout")
+  on.exit(options(timeout = old_timeout), add = TRUE)
+  options(timeout = max(old_timeout, 300))
+
   query_parts <- character(0)
   if (nzchar(sleep_api_user_id)) {
     query_parts <- c(query_parts, paste0("user_id=", URLencode(sleep_api_user_id, reserved = TRUE)))
@@ -295,8 +300,8 @@ read_sleep_api <- function(mapping) {
     request_url,
     open = "rb",
     headers = c(
-      paste0("Authorization: Bearer ", sleep_api_bearer_token),
-      "Accept: application/json"
+      Authorization = paste0("Bearer ", sleep_api_bearer_token),
+      Accept = "application/json"
     )
   )
   on.exit(try(close(con), silent = TRUE), add = TRUE)
