@@ -225,6 +225,16 @@ extract_api_rows <- function(payload) {
         }
       }
     }
+    if (!is.null(payload$days) && is.list(payload$days)) {
+      day_entries <- map(payload$days, "entries")
+      day_entries <- day_entries[!vapply(day_entries, is.null, logical(1))]
+      if (length(day_entries) > 0) {
+        candidate_df <- tryCatch(bind_rows(day_entries), error = function(e) NULL)
+        if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
+          return(as_tibble(candidate_df, .name_repair = "unique"))
+        }
+      }
+    }
     candidate_df <- tryCatch(bind_rows(payload), error = function(e) NULL)
     if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
       return(as_tibble(candidate_df, .name_repair = "unique"))
@@ -235,36 +245,53 @@ extract_api_rows <- function(payload) {
 
 normalize_sleep_api_rows <- function(df, mapping) {
   df <- as_tibble(df, .name_repair = "unique")
-  df <- rename_api_column(df, mapping$garmin_date, c(
+  df <- rename_api_column(df, "Date", c(
     "Date", "date", "sleep_date", "sleepDate", "view_date", "viewDate",
     "night_date", "nightDate", "day", "sleepDay"
   ))
-  df <- rename_api_column(df, mapping$garmin_bedtime, c(
+  df <- rename_api_column(df, "bedtime", c(
     "bedtime", "bed_time", "sleep_start", "sleepStart", "start_time",
-    "startTime", "start", "asleep_time", "sleep_begin", "sleepBegin"
+    "startTime", "start", "asleep_time", "sleep_begin", "sleepBegin",
+    "sleep_start_time", "sleepStartTime"
   ))
-  df <- rename_api_column(df, mapping$garmin_waketime, c(
+  df <- rename_api_column(df, "waketime", c(
     "waketime", "wake_time", "wakeTime", "sleep_end", "sleepEnd",
-    "end_time", "endTime", "end", "wake_up_time", "wakeUpTime"
+    "end_time", "endTime", "end", "wake_up_time", "wakeUpTime",
+    "sleep_end_time", "sleepEndTime"
   ))
   df <- rename_api_column(df, mapping$garmin_sleep_score, c(
     "Sleep_Score", "sleep_score", "sleepScore", "score", "sleepscore"
   ))
   df <- rename_api_column(df, mapping$garmin_hrv, c(
     "HRV", "hrv", "hrv_status", "hrvStatus", "overnight_hrv", "overnightHrv",
-    "hrv_score"
+    "hrv_score", "avg_overnight_hrv", "avgOvernightHrv"
   ))
   if (!is.null(mapping$garmin_hrv_alt)) {
     df <- rename_api_column(df, mapping$garmin_hrv_alt, c(
-      "hrv_alt", "hrvAlt", "overnight_hrv_alt", "overnightHrvAlt", "avg_hrv", "avgHrv"
+      "hrv_alt", "hrvAlt", "overnight_hrv_alt", "overnightHrvAlt", "avg_hrv", "avgHrv",
+      "avg_overnight_hrv", "avgOvernightHrv"
     ))
   }
   df <- rename_api_column(df, mapping$garmin_rhr, c(
     "RHR", "rhr", "resting_heart_rate", "restingHeartRate", "resting_hr"
   ))
-  df <- rename_api_column(df, mapping$garmin_duration, c(
-    "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength"
+  duration_col <- find_first_api_column(names(df), c(
+    "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength",
+    "total_sleep_duration_minutes", "totalSleepDurationMinutes", "sleep_duration_minutes", "sleepDurationMinutes"
   ))
+  if (!is.na(duration_col) && !is.null(mapping$garmin_duration)) {
+    if (duration_col == "total_sleep_duration_minutes" || duration_col == "totalSleepDurationMinutes" ||
+        duration_col == "sleep_duration_minutes" || duration_col == "sleepDurationMinutes") {
+      df[[mapping$garmin_duration]] <- suppressWarnings(as.numeric(df[[duration_col]]) / 60)
+      if (duration_col != mapping$garmin_duration) {
+        df[[duration_col]] <- NULL
+      }
+    } else {
+      df <- rename_api_column(df, mapping$garmin_duration, c(
+        "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength"
+      ))
+    }
+  }
   df
 }
 
@@ -322,9 +349,9 @@ read_sleep_api <- function(mapping) {
 
   rows <- normalize_sleep_api_rows(rows, mapping)
   required_cols <- c(
-    mapping$garmin_date,
-    mapping$garmin_bedtime,
-    mapping$garmin_waketime,
+    "Date",
+    "bedtime",
+    "waketime",
     mapping$garmin_sleep_score,
     mapping$garmin_rhr
   )
@@ -332,6 +359,34 @@ read_sleep_api <- function(mapping) {
   if (length(missing_cols) > 0) {
     stop("Sleep API export is missing required column(s): ", paste(missing_cols, collapse = ", "))
   }
+
+  rows <- rows %>%
+    mutate(
+      Date = as.Date(Date),
+      bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
+      waketime = parse_datetime_safe(waketime, type = "garmin_time")
+    ) %>%
+    mutate(
+      waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
+      bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date))
+    ) %>%
+    mutate(
+      .bedtime_orig = bedtime,
+      .waketime_orig = waketime,
+      .swap_flag = (!is.na(.bedtime_orig) & !is.na(.waketime_orig) &
+        (hour(.bedtime_orig) <= 12 & hour(.waketime_orig) > 12 & .bedtime_orig < .waketime_orig))
+    ) %>%
+    mutate(
+      bedtime = if_else(.swap_flag, .waketime_orig, .bedtime_orig),
+      waketime = if_else(.swap_flag, .bedtime_orig, .waketime_orig)
+    ) %>%
+    mutate(
+      .missing_window = is.na(bedtime) & is.na(waketime),
+      bedtime = if_else(.missing_window, as.POSIXct(Date) - hours(12), bedtime),
+      waketime = if_else(.missing_window, as.POSIXct(Date) + hours(12), waketime)
+    ) %>%
+    mutate(bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
+    select(-.bedtime_orig, -.waketime_orig, -.swap_flag, -.missing_window)
 
   source_label <- if (nzchar(sleep_api_user_id)) {
     paste0("api://user_id=", sleep_api_user_id)
