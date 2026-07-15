@@ -270,7 +270,7 @@ normalize_sleep_api_rows <- function(df, mapping) {
 
 read_sleep_api <- function(mapping) {
   if (!nzchar(sleep_api_bearer_token)) {
-    stop("sleep_source.api.bearer_token is required (or set API_INTERNAL_SECRET).")
+    stop("sleep_source.api.bearer_token is required in config.private.yaml (or set API_INTERNAL_SECRET).")
   }
   if (!nzchar(sleep_api_user_id) && !nzchar(sleep_api_user_email)) {
     stop("sleep_source.api.user_id or sleep_source.api.user_email is required.")

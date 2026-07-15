@@ -1,0 +1,19 @@
+## Upload-safe private config - no secrets or personal data
+# Use this copy when you want to share the config structure only.
+
+# Sleep input mode:
+# - csv: keep the current file scan under data_directory
+# - api: fetch sleep data from the Sleep Score Private API
+sleep_source:
+  mode: "api"
+  api:
+    base_url: "https://sleepscoreprivate.onrender.com"
+    user_id: ""
+    user_email: ""
+    bearer_token: ""
+
+calendar_source:
+  enabled: true
+  mode: "url"
+  url: ""
+  file_path: ""

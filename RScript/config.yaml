@@ -12,9 +12,7 @@ sleep_source:
   mode: "csv"
   api:
     base_url: "https://sleepscoreprivate.onrender.com"
-    user_id: ""
-    user_email: ""
-    bearer_token: ""
+    user_id: "1"
 
 # --- PARSING SETTINGS ---
 # lists of orders passed to lubridate::parse_date_time
