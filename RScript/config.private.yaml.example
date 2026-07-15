@@ -4,7 +4,8 @@
 #scan_recursive: true
 
 # sleep_source:
-#   mode: "api"
+#   mode: "combined"   # csv, api, or combined
+#   priority: "csv"    # csv-first (default) or api-first fallback
 #   api:
 #     base_url: "https://sleepscoreprivate.onrender.com"
 #     user_id: ""

@@ -151,6 +151,7 @@ script_directory <- if (!is.null(script_path)) dirname(script_path) else normali
 
 # Load flag expression parser for complex boolean flag expressions
 source(file.path(script_directory, "flag_expression_parser.R"), local = FALSE)
+source(file.path(script_directory, "sleep_source_combined_helpers.R"), local = FALSE)
 
 # load configuration (primary + optional private override)
 config <- read_yaml("config.yaml")
@@ -174,10 +175,10 @@ if (is.null(config$sensor_files) && !is.null(config$temp_files)) {
 
 # Sleep input can come from the legacy CSV scan or from the Sleep Score API.
 sleep_source_cfg <- config$sleep_source %||% list()
-sleep_source_mode <- tolower(trimws(as.character(sleep_source_cfg$mode %||% "csv")))
-if (!sleep_source_mode %in% c("csv", "api")) {
-  stop(sprintf("Invalid sleep_source.mode '%s'; expected 'csv' or 'api'.", sleep_source_mode))
-}
+sleep_source_mode <- normalize_sleep_source_mode(sleep_source_cfg$mode %||% "csv")
+sleep_source_priority <- normalize_sleep_source_priority(sleep_source_cfg$priority %||% "csv")
+sleep_source_uses_csv <- sleep_source_mode %in% c("csv", "combined")
+sleep_source_uses_api <- sleep_source_mode %in% c("api", "combined")
 sleep_api_cfg <- sleep_source_cfg$api %||% list()
 sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% "https://sleepscoreprivate.onrender.com"))
 if (nzchar(sleep_api_base_url)) {
@@ -295,7 +296,7 @@ normalize_sleep_api_rows <- function(df, mapping) {
   df
 }
 
-read_sleep_api <- function(mapping) {
+read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
   if (!nzchar(sleep_api_bearer_token)) {
     stop("sleep_source.api.bearer_token is required in config.private.yaml (or set API_INTERNAL_SECRET).")
   }
@@ -314,6 +315,12 @@ read_sleep_api <- function(mapping) {
   }
   if (nzchar(sleep_api_user_email)) {
     query_parts <- c(query_parts, paste0("user_email=", URLencode(sleep_api_user_email, reserved = TRUE)))
+  }
+  if (!is.null(date_start) && !is.na(date_start)) {
+    query_parts <- c(query_parts, paste0("date_start=", URLencode(format(as.Date(date_start), "%Y-%m-%d"), reserved = TRUE)))
+  }
+  if (!is.null(date_end) && !is.na(date_end)) {
+    query_parts <- c(query_parts, paste0("date_end=", URLencode(format(as.Date(date_end), "%Y-%m-%d"), reserved = TRUE)))
   }
   query_parts <- c(query_parts, "mode=entries")
 
@@ -1934,7 +1941,7 @@ classification <- local({
 
   # classify discovered files
   sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, sensor_files = config$sensor_files)]
-  sleep_candidates <- if (sleep_source_mode == "csv") {
+  sleep_candidates <- if (sleep_source_uses_csv) {
     all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
   } else {
     character(0)
@@ -1962,7 +1969,7 @@ classification <- local({
   cat("\n")
 
   # expand explicit paths and merge with discovered names
-  explicit_sleep_raw <- if (sleep_source_mode == "csv") {
+  explicit_sleep_raw <- if (sleep_source_uses_csv) {
     file.path(config$data_directory, config$sleep_data_sources)
   } else {
     character(0)
@@ -2143,6 +2150,41 @@ if (nrow(calendar_daily) > 0) {
 
 
 
+if (sleep_source_uses_api && exists("sensor_raw")) {
+  sensor_days <- sort(unique(as.Date(wake_date(sensor_raw$timestamp))))
+  sensor_days <- sensor_days[!is.na(sensor_days)]
+  api_query_dates <- sensor_days
+  if (sleep_source_mode == "combined") {
+    csv_sleep_df <- prepare_sleep_source_rows(sleep_df_raw, "csv")
+    csv_dates <- if ("Date" %in% names(csv_sleep_df)) csv_sleep_df$Date else as.Date(character(0))
+    api_query_dates <- sleep_source_query_dates(sensor_days, csv_dates, sleep_source_priority)
+  }
+
+  api_df <- tibble()
+  if (length(api_query_dates) > 0) {
+    api_ranges <- split_date_ranges(api_query_dates)
+    if (isTRUE(verbose)) {
+      cat(sprintf("Sleep API query ranges: %d range(s), %d day(s)\n", length(api_ranges), length(api_query_dates)))
+      for (rng in api_ranges) {
+        cat(sprintf("  %s -> %s\n", format(rng$start), format(rng$end)))
+      }
+    }
+    api_df <- if (use_future && length(api_ranges) > 1) {
+      furrr::future_map_dfr(api_ranges, function(rng) read_sleep_api(mapping, date_start = rng$start, date_end = rng$end))
+    } else {
+      map_dfr(api_ranges, function(rng) read_sleep_api(mapping, date_start = rng$start, date_end = rng$end))
+    }
+  } else if (sleep_source_mode == "api") {
+    api_df <- read_sleep_api(mapping)
+  }
+
+  if (sleep_source_mode == "combined") {
+    sleep_df_raw <- merge_sleep_source_rows(sleep_df_raw, api_df, sleep_source_priority)
+  } else if (nrow(api_df) > 0) {
+    sleep_df_raw <- api_df
+  }
+}
+
 # build a per-night sensor summary (after any filtering)
 sensor_summary <- sensor_raw %>%
   mutate(Date = wake_date(timestamp),
@@ -2192,7 +2234,7 @@ build_dashboard_df <- function(viz_source, analysis_df, selected_metrics) {
       Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor),
       Sleep_Duration = format_hours_minutes(Sleep_Duration)
     ) %>%
-    select(Date, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
+    select(Date, Sleep_Source, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
     mutate(Date_Str = format(Date, "%d.%m.%Y"))
 }
 
@@ -2220,6 +2262,9 @@ sleep_complete <- {
   if (!is.null(duration_col)) rename_map[["Sleep_Duration"]] <- duration_col
   sleep_df_raw %>% rename(!!!rename_map) %>%
     mutate(across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final))
+}
+if (!"Sleep_Source" %in% names(sleep_complete)) {
+  sleep_complete$Sleep_Source <- ifelse(startsWith(as.character(sleep_complete$Source_File), "api://"), "api", "csv")
 }
 
 # drop rows with missing critical sleep metrics immediately
@@ -2318,7 +2363,8 @@ report_nightly_review <- function(temp_mapped) {
       Sensor_Files,
       Source_File,
       Sensor_Names_Raw = Sensor_Names,
-      Sleep_Source = Source_File,
+      Sleep_Source = if ("Sleep_Source" %in% names(temp_mapped)) Sleep_Source else ifelse(startsWith(as.character(Source_File), "api://"), "api", "csv"),
+      Sleep_Source_File = Source_File,
       Sleep_Name = ifelse(
         str_detect(canonical_basename(Source_File), regex("schlaf", ignore_case = TRUE)),
         "Sleep",
@@ -2339,9 +2385,9 @@ report_nightly_review <- function(temp_mapped) {
     )
 
   cat(sprintf(
-    "Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n",
+    "Review DF constructed: %d nights, %d unique sleep sources (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n",
     nrow(review_df),
-    n_distinct(review_df$Sleep_Source),
+    n_distinct(review_df$Sleep_Source_File),
     n_distinct(review_df$Sleep_Name),
     n_distinct(unlist(review_df$Sensor_Files)),
     n_distinct(unlist(review_df$Sensor_Names))

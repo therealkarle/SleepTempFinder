@@ -286,5 +286,7 @@ If you want, this README can also be extended with a dedicated CSV column refere
 
 - Default mode is `csv`.
 - Set `sleep_source.mode: api` to fetch sleep data from the Sleep Score Private API.
+- Set `sleep_source.mode: combined` to use both sources per day.
+- Control fallback order with `sleep_source.priority: csv` or `api`. The default is `csv`.
 - Configure `sleep_source.api.base_url`, `user_id` or `user_email`, and `bearer_token` in `RScript/config.private.yaml`.
 - Sensor and calendar data stay local; only the sleep input changes.
