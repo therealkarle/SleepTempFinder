@@ -451,6 +451,12 @@ equal_pair <- function(lhs, rhs) {
   (is.na(lhs) & is.na(rhs)) | (!is.na(lhs) & !is.na(rhs) & lhs == rhs)
 }
 
+compare_metric <- function(df, field) {
+  lhs <- df[[paste0(field, "_csv")]]
+  rhs <- df[[paste0(field, "_api")]]
+  ifelse(equal_pair(lhs, rhs), 1L, 0L)
+}
+
 csv_rows <- load_sleep_csv_rows(data_dir, mapping, start_date)
 api_rows <- load_sleep_api_rows(start_date, end_date)
 
@@ -463,16 +469,18 @@ comparison <- full_join(
   arrange(Date)
 
 compare_fields <- c("bedtime", "waketime", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
-comparison$equal_1_0 <- 1L
 for (field in compare_fields) {
-  lhs <- comparison[[paste0(field, "_csv")]]
-  rhs <- comparison[[paste0(field, "_api")]]
-  comparison$equal_1_0[!equal_pair(lhs, rhs)] <- 0L
+  comparison[[paste0(field, "_equal_1_0")]] <- compare_metric(comparison, field)
 }
+comparison$equal_1_0 <- ifelse(
+  rowSums(comparison[paste0(compare_fields, "_equal_1_0")] == 1L, na.rm = TRUE) == length(compare_fields),
+  1L,
+  0L
+)
 
 ordered_columns <- c(
   "Date",
-  unlist(lapply(compare_fields, function(field) c(paste0(field, "_csv"), paste0(field, "_api"))), use.names = FALSE),
+  unlist(lapply(compare_fields, function(field) c(paste0(field, "_csv"), paste0(field, "_api"), paste0(field, "_equal_1_0"))), use.names = FALSE),
   "Source_File_csv", "Source_File_api",
   "Source_Name_csv", "Source_Name_api",
   "Sleep_Source_csv", "Sleep_Source_api",
@@ -484,6 +492,8 @@ comparison <- comparison[, c(intersect(ordered_columns, names(comparison)), rema
 
 stopifnot("Date" %in% names(comparison))
 stopifnot("equal_1_0" %in% names(comparison))
+stopifnot(all(paste0(compare_fields, "_equal_1_0") %in% names(comparison)))
+stopifnot(all(vapply(comparison[paste0(compare_fields, "_equal_1_0")], function(col) all(is.na(col) | col %in% c(0L, 1L)), logical(1))))
 stopifnot(all(is.na(comparison$equal_1_0) | comparison$equal_1_0 %in% c(0L, 1L)))
 stopifnot(all(is.na(comparison$Date) | comparison$Date >= start_date))
 
