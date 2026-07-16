@@ -2155,8 +2155,7 @@ if (sleep_source_uses_api && exists("sensor_raw")) {
   sensor_days <- sensor_days[!is.na(sensor_days)]
   api_query_dates <- sensor_days
   if (sleep_source_mode == "combined") {
-    csv_sleep_df <- prepare_sleep_source_rows(sleep_df_raw, "csv")
-    csv_dates <- if ("Date" %in% names(csv_sleep_df)) csv_sleep_df$Date else as.Date(character(0))
+    csv_dates <- if ("Date" %in% names(sleep_df_raw)) unique(as.Date(sleep_df_raw$Date)) else as.Date(character(0))
     api_query_dates <- sleep_source_query_dates(sensor_days, csv_dates, sleep_source_priority)
   }
 

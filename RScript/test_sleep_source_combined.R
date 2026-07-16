@@ -20,6 +20,8 @@ stopifnot(identical(query_days, as.Date(c("2026-07-01", "2026-07-03", "2026-07-0
 
 csv_df <- data.frame(
   Date = as.Date(c("2026-07-01", "2026-07-02")),
+  bedtime = as.POSIXct(c("2026-06-30 22:00:00", "2026-07-01 22:15:00"), tz = "UTC"),
+  waketime = as.POSIXct(c("2026-07-01 06:30:00", "2026-07-02 06:45:00"), tz = "UTC"),
   Sleep_Score = c(81, 82),
   HRV = c(55, 56),
   RHR = c(49, 48),
@@ -31,6 +33,8 @@ csv_df <- data.frame(
 
 api_df <- data.frame(
   Date = as.Date(c("2026-07-01", "2026-07-03")),
+  bedtime = as.POSIXct(c("2026-06-30 21:55:00", "2026-07-02 22:05:00"), tz = "UTC"),
+  waketime = as.POSIXct(c("2026-07-01 06:20:00", "2026-07-03 06:35:00"), tz = "UTC"),
   Sleep_Score = c(70, 74),
   HRV = c(40, 44),
   RHR = c(60, 58),
@@ -42,6 +46,8 @@ api_df <- data.frame(
 
 merged_csv_first <- merge_sleep_source_rows(csv_df, api_df, "csv")
 stopifnot(nrow(merged_csv_first) == 3L)
+stopifnot(inherits(merged_csv_first$bedtime, "POSIXct"))
+stopifnot(inherits(merged_csv_first$waketime, "POSIXct"))
 stopifnot(merged_csv_first$Sleep_Source[match(as.Date("2026-07-01"), merged_csv_first$Date)] == "csv")
 stopifnot(merged_csv_first$Sleep_Source[match(as.Date("2026-07-03"), merged_csv_first$Date)] == "api")
 

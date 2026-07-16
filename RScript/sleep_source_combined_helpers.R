@@ -26,6 +26,17 @@ row_non_na_count <- function(df, cols) {
   rowSums(!is.na(as.matrix(df[, cols, drop = FALSE])))
 }
 
+harmonize_sleep_source_types <- function(df) {
+  if (is.null(df) || nrow(df) == 0) return(df)
+  keep_cols <- names(df)[vapply(df, function(col) inherits(col, c("Date", "POSIXt")), logical(1))]
+  keep_cols <- unique(c(keep_cols, intersect(c("Sleep_Source", "Source_File", "Source_Name"), names(df))))
+  convert_cols <- setdiff(names(df), keep_cols)
+  if (length(convert_cols) > 0) {
+    df[convert_cols] <- lapply(df[convert_cols], as.character)
+  }
+  df
+}
+
 prepare_sleep_source_rows <- function(df, source_label) {
   if (is.null(df) || nrow(df) == 0) {
     if (is.null(df)) {
@@ -33,28 +44,29 @@ prepare_sleep_source_rows <- function(df, source_label) {
     }
     return(dplyr::mutate(df, Sleep_Source = source_label))
   }
-
-  out <- df %>%
-    dplyr::mutate(Sleep_Source = source_label) %>%
-    dplyr::filter(!is.na(Date), !is.na(Sleep_Score), !is.na(HRV), !is.na(RHR))
-
-  if (nrow(out) == 0) {
-    return(out)
-  }
+  out <- df |>
+    dplyr::mutate(Sleep_Source = source_label) |>
+    dplyr::filter(!is.na(Date))
 
   quality_cols <- intersect(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration"), names(out))
-  out$.sleep_quality <- row_non_na_count(out, quality_cols)
-  out <- out %>%
-    dplyr::arrange(Date, dplyr::desc(.sleep_quality)) %>%
-    dplyr::distinct(Date, .keep_all = TRUE) %>%
-    dplyr::select(-.sleep_quality)
+  if (length(quality_cols) > 0) {
+    out$.sleep_quality <- row_non_na_count(out, quality_cols)
+    out <- out |>
+      dplyr::arrange(Date, dplyr::desc(.sleep_quality)) |>
+      dplyr::distinct(Date, .keep_all = TRUE) |>
+      dplyr::select(-.sleep_quality)
+  } else {
+    out <- out |>
+      dplyr::arrange(Date) |>
+      dplyr::distinct(Date, .keep_all = TRUE)
+  }
   out
 }
 
 merge_sleep_source_rows <- function(csv_df, api_df, priority = "csv") {
   priority <- normalize_sleep_source_priority(priority)
-  csv_df <- prepare_sleep_source_rows(csv_df, "csv")
-  api_df <- prepare_sleep_source_rows(api_df, "api")
+  csv_df <- harmonize_sleep_source_types(prepare_sleep_source_rows(csv_df, "csv"))
+  api_df <- harmonize_sleep_source_types(prepare_sleep_source_rows(api_df, "api"))
 
   if (nrow(csv_df) == 0) return(api_df)
   if (nrow(api_df) == 0) return(csv_df)
@@ -65,8 +77,8 @@ merge_sleep_source_rows <- function(csv_df, api_df, priority = "csv") {
     combined <- dplyr::bind_rows(api_df, csv_df)
   }
 
-  combined %>%
-    dplyr::arrange(Date) %>%
+  combined |>
+    dplyr::arrange(Date) |>
     dplyr::distinct(Date, .keep_all = TRUE)
 }
 
