@@ -225,6 +225,44 @@ analysis_metrics:
   #   - Sleep_Score
   #   - HRV
 
+# --- SLEEP SOURCE ---
+# Sleep input can come from the legacy CSV scan, the Sleep Score Private API,
+# or a combination of both.  Configure this section (or override it in
+# config.private.yaml) to control where sleep data comes from.
+#
+# mode:
+#   csv      - use only CSV files found under data_directory
+#   api      - fetch all sleep data from the Sleep Score Private API
+#   combined - use both; priority determines which source wins for dates
+#              that appear in both.  Additionally, csv_skip_fields lets you
+#              pull specific metrics (e.g. HRV) from the API only.
+#
+# priority (combined mode only): "csv" or "api"
+#   When both sources have a row for the same date, the priority source is
+#   kept after deduplication.  csv_skip_fields are ALWAYS filled from the
+#   API even when priority is "csv".
+#
+# csv_skip_fields:
+#   List of metric column names that should be nulled out when loading from
+#   CSV and instead sourced from the API.  This is useful because the Garmin
+#   CSV export has historically produced unreliable HRV (HFV) values.  When
+#   this list is non-empty and mode is "combined", the API is queried for
+#   ALL sensor nights (not just gaps) so the skipped fields can be filled in.
+#   In pure "csv" mode the listed fields are still nulled out, which means
+#   they will be NA (no API data to fill them).
+#   Default behaviour: if HRV is enabled in analysis_metrics, HRV is added
+#   automatically.  Set this to [] to disable.
+#
+# Example (place in config.private.yaml):
+#   sleep_source:
+#     mode: "combined"
+#     priority: "api"
+#     csv_skip_fields: ["HRV"]
+#     api:
+#       base_url: "https://sleepscoreprivate.onrender.com"
+#       user_email: "you@example.com"
+#       bearer_token: "your-token"
+
 # --- OUTLIER FILTER ---
 # mode: false/manual/value_interval
 # If manual is used, thresholds are applied per metric and any night with

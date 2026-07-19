@@ -45,6 +45,17 @@ data_dir <- config$data_directory %||% "../data"
 decimal_mark <- loc$decimal_mark %||% ","
 
 sleep_source_cfg <- config$sleep_source %||% list()
+
+# Null out HRV/HFV from CSV since the Garmin export values are unreliable.
+analysis_metrics_enabled <- config$analysis_metrics$enabled %||% list()
+hrv_enabled <- isTRUE(analysis_metrics_enabled$HRV)
+csv_skip_fields <- if (hrv_enabled) {
+  trimws(unlist(sleep_source_cfg$csv_skip_fields %||% "HRV"))
+} else {
+  character(0)
+}
+csv_skip_fields <- csv_skip_fields[csv_skip_fields != ""]
+
 sleep_api_cfg <- sleep_source_cfg$api %||% config$api %||% list()
 sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% "https://sleepscoreprivate.onrender.com"))
 if (nzchar(sleep_api_base_url)) {
@@ -425,7 +436,7 @@ load_sleep_csv_rows <- function(data_dir, mapping, start_date) {
 
   rows %>%
     filter(Date >= start_date) %>%
-    prepare_sleep_source_rows("csv") %>%
+    prepare_sleep_source_rows("csv", skip_fields = csv_skip_fields) %>%
     select(Date, bedtime, waketime, Sleep_Score, HRV, RHR, Sleep_Duration, Source_File, Source_Name, Sleep_Source)
 }
 

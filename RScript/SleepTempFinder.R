@@ -484,6 +484,22 @@ normalize_analysis_metrics <- function(cfg) {
 
 selected_metrics <- normalize_analysis_metrics(config$analysis_metrics)
 
+# Determine which fields should be skipped (nulled out) when loading from CSV.
+# HRV/HFV values from the Garmin CSV export are unreliable, so they should
+# always come from the API when available.  This applies in both 'csv' and
+# 'combined' modes.  In 'combined' mode the API is queried for ALL sensor
+# days (not just gaps) so that the skipped fields can be filled in.
+csv_skip_fields <- character(0)
+hrv_enabled <- "HRV" %in% selected_metrics
+if (hrv_enabled) {
+  csv_skip_fields <- trimws(unlist(sleep_source_cfg$csv_skip_fields %||% "HRV"))
+  csv_skip_fields <- csv_skip_fields[csv_skip_fields != ""]
+}
+if (isTRUE(verbose) && length(csv_skip_fields) > 0) {
+  cat(sprintf("CSV skip fields: %s
+", paste(csv_skip_fields, collapse = ", ")))
+}
+
 # summary interval for reported value ranges; default is 90% if config value missing or invalid
 summary_interval <- if (!is.null(config$summary_interval)) as.numeric(config$summary_interval) else NA_real_
 if (is.na(summary_interval) || summary_interval <= 0 || summary_interval >= 1) {
@@ -2156,7 +2172,7 @@ if (sleep_source_uses_api && exists("sensor_raw")) {
   api_query_dates <- sensor_days
   if (sleep_source_mode == "combined") {
     csv_dates <- if ("Date" %in% names(sleep_df_raw)) unique(as.Date(sleep_df_raw$Date)) else as.Date(character(0))
-    api_query_dates <- sleep_source_query_dates(sensor_days, csv_dates, sleep_source_priority)
+    api_query_dates <- sleep_source_query_dates(sensor_days, csv_dates, sleep_source_priority, skip_fields = csv_skip_fields)
   }
 
   api_df <- tibble()
@@ -2178,9 +2194,21 @@ if (sleep_source_uses_api && exists("sensor_raw")) {
   }
 
   if (sleep_source_mode == "combined") {
-    sleep_df_raw <- merge_sleep_source_rows(sleep_df_raw, api_df, sleep_source_priority)
+    sleep_df_raw <- merge_sleep_source_rows(sleep_df_raw, api_df, sleep_source_priority, skip_fields = csv_skip_fields)
   } else if (nrow(api_df) > 0) {
     sleep_df_raw <- api_df
+  }
+}
+
+# In pure 'csv' mode, null out unreliable CSV fields (e.g. HRV) since there
+# is no API to supply the correct values.  The column will remain NA.
+if (sleep_source_mode == "csv" && length(csv_skip_fields) > 0) {
+  for (col in intersect(csv_skip_fields, names(sleep_df_raw))) {
+    sleep_df_raw[[col]][!is.na(sleep_df_raw[[col]])] <- NA
+  }
+  if (isTRUE(verbose)) {
+    cat(sprintf("CSV mode: nulled out %d HRV/skip field value(s)
+", length(csv_skip_fields)))
   }
 }
 
