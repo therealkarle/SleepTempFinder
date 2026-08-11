@@ -356,45 +356,53 @@ read_sleep_api <- function(date_start, date_end) {
   on.exit(options(timeout = old_timeout), add = TRUE)
   options(timeout = max(old_timeout, 300))
 
-  query_parts <- character(0)
-  if (nzchar(sleep_api_user_id)) {
-    query_parts <- c(query_parts, paste0("user_id=", URLencode(sleep_api_user_id, reserved = TRUE)))
+  api_get_json <- function(path, query_parts = character(0)) {
+    request_url <- paste0(
+      sleep_api_base_url, path,
+      if (length(query_parts) > 0) paste0("?", paste(query_parts, collapse = "&")) else ""
+    )
+    con <- url(
+      request_url,
+      open = "rb",
+      headers = c(
+        Authorization = paste0("Bearer ", sleep_api_bearer_token),
+        Accept = "application/json"
+      )
+    )
+    on.exit(try(close(con), silent = TRUE), add = TRUE)
+    raw_text <- tryCatch(
+      readLines(con, warn = FALSE, encoding = "UTF-8"),
+      error = function(e) stop("Failed to read Sleep API response: ", conditionMessage(e))
+    )
+    tryCatch(
+      jsonlite::fromJSON(paste(raw_text, collapse = "\n"), flatten = TRUE),
+      error = function(e) stop("Failed to parse Sleep API JSON: ", conditionMessage(e))
+    )
   }
-  if (nzchar(sleep_api_user_email)) {
-    query_parts <- c(query_parts, paste0("user_email=", URLencode(sleep_api_user_email, reserved = TRUE)))
+
+  user_id <- sleep_api_user_id
+  if (!nzchar(user_id)) {
+    lookup_payload <- api_get_json(
+      "/api/v1/users/lookup",
+      paste0("query=", URLencode(sleep_api_user_email, reserved = TRUE))
+    )
+    user_id <- as.character(
+      lookup_payload$id %||% lookup_payload$user_id %||% lookup_payload$userId %||% ""
+    )
+    if (!nzchar(user_id)) {
+      stop("Sleep API user lookup returned no user id for: ", sleep_api_user_email)
+    }
   }
+
+  query_parts <- c(paste0("user_id=", URLencode(user_id, reserved = TRUE)))
   if (!is.null(date_start) && !is.na(date_start)) {
-    query_parts <- c(query_parts, paste0("date_start=", URLencode(format(as.Date(date_start), "%Y-%m-%d"), reserved = TRUE)))
+    query_parts <- c(query_parts, paste0("from=", URLencode(format(as.Date(date_start), "%Y-%m-%d"), reserved = TRUE)))
   }
   if (!is.null(date_end) && !is.na(date_end)) {
-    query_parts <- c(query_parts, paste0("date_end=", URLencode(format(as.Date(date_end), "%Y-%m-%d"), reserved = TRUE)))
+    query_parts <- c(query_parts, paste0("to=", URLencode(format(as.Date(date_end), "%Y-%m-%d"), reserved = TRUE)))
   }
-  query_parts <- c(query_parts, "mode=entries")
-
-  request_url <- paste0(
-    sleep_api_base_url,
-    "/api/users/sleep-export-data?",
-    paste(query_parts, collapse = "&")
-  )
-
-  con <- url(
-    request_url,
-    open = "rb",
-    headers = c(
-      Authorization = paste0("Bearer ", sleep_api_bearer_token),
-      Accept = "application/json"
-    )
-  )
-  on.exit(try(close(con), silent = TRUE), add = TRUE)
-
-  raw_text <- tryCatch(
-    readLines(con, warn = FALSE, encoding = "UTF-8"),
-    error = function(e) stop("Failed to read sleep API response: ", conditionMessage(e))
-  )
-  payload <- tryCatch(
-    jsonlite::fromJSON(paste(raw_text, collapse = "\n"), flatten = TRUE),
-    error = function(e) stop("Failed to parse sleep API JSON: ", conditionMessage(e))
-  )
+  query_parts <- c(query_parts, "limit=1000", "offset=0")
+  payload <- api_get_json("/api/v1/sleep/entries", query_parts)
 
   rows <- extract_api_rows(payload)
   if (nrow(rows) == 0) {
@@ -404,8 +412,8 @@ read_sleep_api <- function(date_start, date_end) {
   rows <- normalize_sleep_api_rows(rows)
   rows %>%
     mutate(
-      Source_File = if (nzchar(sleep_api_user_id)) {
-        paste0("api://user_id=", sleep_api_user_id)
+      Source_File = if (nzchar(user_id)) {
+        paste0("api://user_id=", user_id)
       } else {
         paste0("api://user_email=", sleep_api_user_email)
       },
