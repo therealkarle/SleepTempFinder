@@ -294,12 +294,12 @@ normalize_sleep_api_rows <- function(df) {
   df <- rename_api_column(df, "bedtime", c(
     "bedtime", "bed_time", "sleep_start", "sleepStart", "start_time",
     "startTime", "start", "asleep_time", "sleep_begin", "sleepBegin",
-    "sleep_start_time", "sleepStartTime"
+    "sleep_start_time", "sleepStartTime", "sleep_start_time_local", "sleepStartTimeLocal"
   ))
   df <- rename_api_column(df, "waketime", c(
     "waketime", "wake_time", "wakeTime", "sleep_end", "sleepEnd",
     "end_time", "endTime", "end", "wake_up_time", "wakeUpTime",
-    "sleep_end_time", "sleepEndTime"
+    "sleep_end_time", "sleepEndTime", "sleep_end_time_local", "sleepEndTimeLocal"
   ))
   df <- rename_api_column(df, "Sleep_Score", c(
     "Sleep_Score", "sleep_score", "sleepScore", "score", "sleepscore"
