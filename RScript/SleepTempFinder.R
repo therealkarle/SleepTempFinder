@@ -908,11 +908,15 @@ if (!is.null(filter_arg)) {
 
 # helper that applies parsing orders by type and quiet=TRUE
 parse_datetime_safe <- function(x, type = "garmin_datetime") {
+  x_clean <- x
+  if (type == "garmin_time") {
+    x_clean <- sub("\\s*\\(UTC[+-]\\d{2}:?\\d{2}\\)\\s*$", "", as.character(x))
+  }
   if (is.null(orders[[type]])) {
     warning("no parse orders for type: ", type)
-    return(parse_date_time(x, quiet = TRUE))
+    return(parse_date_time(x_clean, quiet = TRUE))
   }
-  res <- parse_date_time(x, orders = orders[[type]], quiet = TRUE)
+  res <- parse_date_time(x_clean, orders = orders[[type]], quiet = TRUE)
   # warn only for actual parse failures; plain missing values are expected
   if (length(res) > 0 && any(is.na(res))) {
     x_chr <- as.character(x)

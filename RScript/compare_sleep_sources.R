@@ -124,11 +124,15 @@ coerce_date <- function(x) {
 }
 
 parse_datetime_safe_local <- function(x, type = "garmin_datetime") {
+  x_clean <- x
+  if (type == "garmin_time") {
+    x_clean <- sub("\\s*\\(UTC[+-]\\d{2}:?\\d{2}\\)\\s*$", "", as.character(x))
+  }
   orders <- parse_orders[[type]]
   if (is.null(orders) || length(orders) == 0) {
-    return(parse_date_time(x, quiet = TRUE))
+    return(parse_date_time(x_clean, quiet = TRUE))
   }
-  parse_date_time(x, orders = orders, quiet = TRUE)
+  parse_date_time(x_clean, orders = orders, quiet = TRUE)
 }
 
 parse_duration_like <- function(x) {
