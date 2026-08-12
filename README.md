@@ -292,6 +292,9 @@ If you want, this README can also be extended with a dedicated CSV column refere
 - Control fallback order with `sleep_source.priority: csv`, `api`, or `garmin`.
 - Garmin credentials use `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and optionally `GARMINTOKENS`.
   The first login may ask for an MFA code; subsequent runs reuse the wrapper token.
+- Run `python GarminConnectBridge/setup_garmin.py` for interactive setup. It asks for
+  E-Mail, password, token location, and MFA when required, then creates the local
+  `.env` file. The password is never saved.
 - Install the bridge dependencies with `pip install -r GarminConnectBridge/requirements.txt`.
 - Garmin raw responses are cached under `.cache/garmin`; SleepScoreBattle responses are
   cached under `.cache/sleepscorebattle`. Expired cache entries are used only as a

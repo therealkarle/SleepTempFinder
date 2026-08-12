@@ -15,9 +15,12 @@ sleep_source:
     cache_ttl_seconds: 86400
     metrics: []
     lifestyle_logging:
-      enabled: false
+      enabled: true
+      output_dir: "../.cache/garmin/lifestyle_logging"
   sleepscorebattle:
-    enabled: false
+    enabled: true
+    # Empty loads all returned custom fields, including pre-sleep HR,
+    # sleep-breathing, and time-in-bed metrics.
     metrics: []
     base_url: ""
     user_id: ""

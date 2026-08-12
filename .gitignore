@@ -52,3 +52,5 @@ RScript/sleep_source_compare*
 # API caches and Garmin authentication tokens
 .cache/
 GarminConnectBridge/*.json
+.env
+.garminconnect/

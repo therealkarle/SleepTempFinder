@@ -201,6 +201,9 @@ garmin_metrics <- trimws(unlist(garmin_cfg$metrics %||% character(0)))
 if (isTRUE(garmin_cfg$lifestyle_logging$enabled)) {
   garmin_metrics <- unique(c(garmin_metrics, "lifestyle_logging"))
 }
+garmin_lifestyle_output_dir <- path.expand(as.character(
+  garmin_cfg$lifestyle_logging$output_dir %||% file.path(garmin_cache_dir, "lifestyle_logging")
+))
 garmin_metrics <- garmin_metrics[nzchar(garmin_metrics)]
 sleep_scb_enabled <- isTRUE(sleep_source_cfg$sleepscorebattle$enabled %||% FALSE)
 
@@ -479,7 +482,8 @@ read_garmin_bridge <- function(date_start, date_end) {
     "--end", format(as.Date(date_end), "%Y-%m-%d"),
     "--cache-dir", garmin_cache_dir,
     "--ttl", as.character(garmin_cache_ttl),
-    "--metrics", metric_arg
+    "--metrics", metric_arg,
+    "--lifestyle-output-dir", garmin_lifestyle_output_dir
   )
   output <- system2(python_bin, args = args, stdout = TRUE, stderr = TRUE)
   status <- attr(output, "status") %||% 0L

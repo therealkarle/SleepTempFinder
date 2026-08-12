@@ -19,6 +19,22 @@ from pathlib import Path
 from typing import Any
 
 
+def load_project_env() -> None:
+    """Load the setup script's simple KEY=value .env without a dependency."""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_project_env()
+
+
 BASE_ALIASES = {
     "Date": ("calendarDate", "date", "sleepDate", "sleepDay"),
     "bedtime": ("sleepStartTimestampLocal", "sleepStartTimeLocal", "sleepStart"),
@@ -193,6 +209,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ttl", type=int, default=86400)
     parser.add_argument("--metrics", default="")
     parser.add_argument("--identity", default="default")
+    parser.add_argument("--lifestyle-output-dir", default="")
     return parser.parse_args()
 
 
@@ -216,6 +233,12 @@ def main() -> int:
             payload = fetch_cached(client, method, day_text, [day_text], cache_dir=cache_dir, ttl=args.ttl, identity=args.identity)
             if metric == "lifestyle_logging":
                 row["Garmin_LifestyleLogging"] = payload
+                if args.lifestyle_output_dir:
+                    output_dir = Path(args.lifestyle_output_dir)
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    (output_dir / f"{day_text}_LifestyleLogging.json").write_text(
+                        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+                    )
             else:
                 merge_endpoint_metric(row, metric, payload)
         rows.append(row)

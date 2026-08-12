@@ -276,11 +276,13 @@ sleep_source:
     # Optional: hrv, respiration, spo2, stress, body_battery, heart_rate
     metrics: []
     lifestyle_logging:
-      enabled: false
+      enabled: true
+      output_dir: "../.cache/garmin/lifestyle_logging"
   sleepscorebattle:
-    enabled: false
-    # Empty loads all returned custom fields; otherwise use normalized names,
-    # e.g. sleep_latency, time_in_bed, pre_sleep_heart_rate.
+    enabled: true
+    # Empty means: load every custom field returned by SleepScoreBattle,
+    # including both pre-sleep HR fields, sleep-breathing metrics, and all
+    # time-in-bed metrics.
     metrics: []
     base_url: ""
     user_id: ""
