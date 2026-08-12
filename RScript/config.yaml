@@ -49,6 +49,23 @@ column_names:
   garmin_hrv_alt: "Ø HFV über Nacht"
   garmin_rhr: "Ruheherzfrequenz"
   garmin_duration: "Dauer"
+  garmin_deep_sleep_percentage:
+    - "Deep Sleep %"
+    - "Deep Sleep Percentage"
+    - "Tiefschlaf %"
+  garmin_rem_percentage:
+    - "REM %"
+    - "REM Percentage"
+  garmin_stress:
+    - "Stress"
+    - "Ø Stress"
+  garmin_wake_time:
+    - "Wachzeit"
+    - "Wake Time"
+    - "Awake Time"
+  garmin_restless_moments:
+    - "Unruhige Momente"
+    - "Restless Moments"
   garmin_spo2: "Pulsoximeter"
   garmin_skin_temp: "Veränderung der Hauttemperatur"
   garmin_resp: "Atmung"
@@ -219,6 +236,11 @@ analysis_metrics:
     HRV: true
     RHR: true
     Sleep_Duration: true
+    Deep_Sleep_Percentage: true
+    REM_Percentage: true
+    Stress: true
+    Wake_Time: false
+    Restless_Moments: true
   # compatibility: optionally provide a list of metric names instead
   # metrics:
   #   - Avg_Temp
@@ -278,8 +300,9 @@ sleep_source:
     cache_dir: "../Cache/garmin"
     token_store: ""
     cache_ttl_seconds: 86400
-    # Optional: hrv, respiration, spo2, stress, body_battery, heart_rate
-    metrics: []
+    # Extra Garmin endpoint metrics. Sleep stress is also read directly from
+    # the sleep response; this adds the daily stress endpoint as a fallback.
+    metrics: [stress]
     lifestyle_logging:
       enabled: true
       output_dir: "../Cache/garmin/lifestyle_logging"

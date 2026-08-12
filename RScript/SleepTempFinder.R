@@ -213,6 +213,11 @@ normalize_api_name <- function(x) {
 
 find_first_api_column <- function(hdr, candidates) {
   if (length(hdr) == 0 || length(candidates) == 0) return(NA_character_)
+  # Prefer an exact spelling before normalized matching. In particular,
+  # `waketime` (end of sleep) and `Wake_Time` (awake duration) normalize to
+  # the same value but must remain distinct fields.
+  exact <- candidates[candidates %in% hdr]
+  if (length(exact) > 0) return(exact[[1]])
   idx <- match(normalize_api_name(candidates), normalize_api_name(hdr))
   idx <- idx[!is.na(idx)]
   if (length(idx) == 0) return(NA_character_)
@@ -223,7 +228,21 @@ rename_api_column <- function(df, target_name, candidates) {
   if (is.null(target_name) || !nzchar(target_name)) return(df)
   old_name <- find_first_api_column(names(df), candidates)
   if (!is.na(old_name) && old_name != target_name) {
-    names(df)[names(df) == old_name] <- target_name
+    # A Garmin response can contain both the canonical column and one of its
+    # aliases (for example HRV and avgOvernightHrv). Renaming the alias in
+    # that case creates duplicate names and makes dplyr::mutate() fail.
+    if (target_name %in% names(df)) {
+      target_values <- df[[target_name]]
+      source_values <- df[[old_name]]
+      missing_target <- is.na(target_values)
+      if (any(missing_target)) {
+        target_values[missing_target] <- source_values[missing_target]
+        df[[target_name]] <- target_values
+      }
+      df[[old_name]] <- NULL
+    } else {
+      names(df)[names(df) == old_name] <- target_name
+    }
   }
   df
 }
@@ -294,6 +313,31 @@ normalize_sleep_api_rows <- function(df, mapping) {
   }
   df <- rename_api_column(df, mapping$garmin_rhr, c(
     "RHR", "rhr", "resting_heart_rate", "restingHeartRate", "resting_hr"
+  ))
+  df <- rename_api_column(df, "Deep_Sleep_Seconds", c(
+    "Deep_Sleep_Seconds", "deepSleepSeconds", "deep_sleep_seconds", "deepSleepTimeSeconds",
+    "deepSleepTime", "deep_sleep_time"
+  ))
+  df <- rename_api_column(df, "Deep_Sleep_Percentage", c(
+    "Deep_Sleep_Percentage", "deepSleepPercentage", "deepSleepPercent", "deep_sleep_percentage"
+  ))
+  df <- rename_api_column(df, "REM_Seconds", c(
+    "REM_Seconds", "remSleepSeconds", "rem_sleep_seconds", "remSleepTimeSeconds",
+    "remSleepTime", "rem_sleep_time"
+  ))
+  df <- rename_api_column(df, "REM_Percentage", c(
+    "REM_Percentage", "remSleepPercentage", "remSleepPercent", "rem_sleep_percentage"
+  ))
+  df <- rename_api_column(df, "Wake_Time", c(
+    "Wake_Time", "awakeSleepSeconds", "awake_sleep_seconds", "awakeTimeSeconds",
+    "awakeTime", "wakeTimeSeconds", "Wachzeit"
+  ))
+  df <- rename_api_column(df, "Restless_Moments", c(
+    "Restless_Moments", "restlessMomentsCount", "restless_moments", "restlessMoments",
+    "Unruhige Momente"
+  ))
+  df <- rename_api_column(df, "Stress", c(
+    "Stress", "Garmin_stress", "averageStressLevel", "avgStressLevel", "stress", "stressLevel"
   ))
   duration_col <- find_first_api_column(names(df), c(
     "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength",
@@ -532,13 +576,49 @@ read_garmin_bridge <- function(date_start, date_end) {
   rows <- as_tibble(payload, .name_repair = "unique")
   if (nrow(rows) == 0) stop("Garmin Connect returned no sleep rows.")
   rows <- normalize_sleep_api_rows(rows, mapping)
-  required_cols <- c(
-    "Date", "bedtime", "waketime", mapping$garmin_sleep_score,
-    mapping$garmin_hrv, mapping$garmin_rhr
+  # Keep the bridge contract canonical even when an older bridge/cache used
+  # one of Garmin's raw wake-time field names.
+  if (!"waketime" %in% names(rows)) {
+    wake_alias <- find_first_api_column(names(rows), c(
+      "wakeTime", "wake_time", "sleepEnd", "sleepEndTimeLocal",
+      "sleepEndTimestampLocal", "waketime"
+    ))
+    if (!is.na(wake_alias)) names(rows)[names(rows) == wake_alias] <- "waketime"
+  }
+  # Garmin returns an empty/partial row for days without a scored sleep
+  # record. Keep those rows so the date range remains traceable; downstream
+  # filtering will exclude rows without a usable sleep window.
+  required_cols <- c("Date", "bedtime", "waketime")
+  for (column in setdiff(required_cols, names(rows))) {
+    rows[[column]] <- if (column == "Date") as.Date(NA) else as.POSIXct(NA)
+  }
+  optional_metrics <- c(
+    "Sleep_Score", "HRV", "RHR", "Sleep_Duration", "Deep_Sleep_Percentage",
+    "REM_Percentage", "Stress", "Wake_Time", "Restless_Moments"
   )
-  missing_cols <- setdiff(required_cols, names(rows))
-  if (length(missing_cols) > 0) {
-    stop("Garmin Connect response is missing required column(s): ", paste(missing_cols, collapse = ", "))
+  for (metric in optional_metrics) {
+    if (!metric %in% names(rows)) rows[[metric]] <- NA_real_
+  }
+  # normalize_sleep_api_rows also supports the legacy CSV mapping and may
+  # therefore leave the real Garmin value under a configured header such as
+  # "Score" while the canonical column above is only the NA placeholder.
+  # Promote those values before the analysis-facing rename step.
+  bridge_aliases <- c(
+    Sleep_Score = mapping$garmin_sleep_score,
+    HRV = mapping$garmin_hrv,
+    RHR = mapping$garmin_rhr,
+    Sleep_Duration = mapping$garmin_duration
+  )
+  for (canonical in names(bridge_aliases)) {
+    alias <- bridge_aliases[[canonical]]
+    if (!is.null(alias) && nzchar(alias) && alias %in% names(rows) && canonical %in% names(rows)) {
+      canonical_values <- rows[[canonical]]
+      alias_values <- rows[[alias]]
+      missing_canonical <- is.na(canonical_values)
+      canonical_values[missing_canonical] <- alias_values[missing_canonical]
+      rows[[canonical]] <- canonical_values
+      if (alias != canonical) rows[[alias]] <- NULL
+    }
   }
   rows <- rows %>%
     mutate(
@@ -590,7 +670,8 @@ matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.in
 default_analysis_metrics <- c(
   "Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD",
   "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR",
-  "Sleep_Duration"
+  "Sleep_Duration", "Deep_Sleep_Percentage", "REM_Percentage", "Stress",
+  "Wake_Time", "Restless_Moments"
 )
 
 normalize_analysis_metrics <- function(cfg) {
@@ -1322,7 +1403,11 @@ format_hours_minutes <- function(hours) {
   out
 }
 
-outlier_metrics <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
+outlier_metrics <- c(
+  "Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD",
+  "Sleep_Score", "HRV", "RHR", "Sleep_Duration", "Deep_Sleep_Percentage",
+  "REM_Percentage", "Stress", "Wake_Time", "Restless_Moments"
+)
 
 parse_outlier_threshold_value <- function(val, metric = NULL) {
   if (is.null(val) || length(val) == 0 || is.na(val) || val == "") return(NA_real_)
@@ -2486,7 +2571,24 @@ build_dashboard_df <- function(viz_source, analysis_df, selected_metrics) {
 
 resolve_sleep_col <- function(mapping, hdr, key, alt_key = NULL) {
   col <- NULL
-  if (!is.null(mapping[[key]]) && mapping[[key]] %in% hdr) col <- mapping[[key]]
+  # Garmin bridge rows already use the canonical analysis names. Prefer them
+  # over legacy CSV header names from config.yaml; otherwise rename() receives
+  # both the canonical column and its legacy alias and creates duplicates.
+  canonical <- c(
+    garmin_sleep_score = "Sleep_Score",
+    garmin_hrv = "HRV",
+    garmin_rhr = "RHR",
+    garmin_duration = "Sleep_Duration",
+    garmin_deep_sleep_percentage = "Deep_Sleep_Percentage",
+    garmin_rem_percentage = "REM_Percentage",
+    garmin_stress = "Stress",
+    garmin_wake_time = "Wake_Time",
+    garmin_restless_moments = "Restless_Moments"
+  )[[key]]
+  if (!is.null(canonical) && canonical %in% hdr) return(canonical)
+  candidates <- unlist(mapping[[key]] %||% character(0), use.names = FALSE)
+  matches <- candidates[candidates %in% hdr]
+  if (length(matches) > 0) col <- matches[[1]]
   if (is.null(col) && !is.null(alt_key)) {
     alt_vals <- unlist(mapping[[alt_key]])
     alt_match <- alt_vals[alt_vals %in% hdr]
@@ -2502,15 +2604,42 @@ sleep_complete <- {
   hrv_col <- resolve_sleep_col(mapping, hdr, "garmin_hrv", "garmin_hrv_alt")
   rhr_col <- resolve_sleep_col(mapping, hdr, "garmin_rhr")
   duration_col <- resolve_sleep_col(mapping, hdr, "garmin_duration")
+  deep_col <- resolve_sleep_col(mapping, hdr, "garmin_deep_sleep_percentage")
+  rem_col <- resolve_sleep_col(mapping, hdr, "garmin_rem_percentage")
+  stress_col <- resolve_sleep_col(mapping, hdr, "garmin_stress")
+  wake_col <- resolve_sleep_col(mapping, hdr, "garmin_wake_time")
+  restless_col <- resolve_sleep_col(mapping, hdr, "garmin_restless_moments")
   if (!is.null(sleep_col)) rename_map[["Sleep_Score"]] <- sleep_col
   if (!is.null(hrv_col)) rename_map[["HRV"]] <- hrv_col
   if (!is.null(rhr_col)) rename_map[["RHR"]] <- rhr_col
   if (!is.null(duration_col)) rename_map[["Sleep_Duration"]] <- duration_col
-  sleep_df_raw %>% rename(!!!rename_map) %>%
+  if ("Deep_Sleep_Seconds" %in% hdr) rename_map[["Deep_Sleep_Seconds"]] <- "Deep_Sleep_Seconds"
+  if ("REM_Seconds" %in% hdr) rename_map[["REM_Seconds"]] <- "REM_Seconds"
+  if (!is.null(deep_col)) rename_map[["Deep_Sleep_Percentage"]] <- deep_col
+  if (!is.null(rem_col)) rename_map[["REM_Percentage"]] <- rem_col
+  if (!is.null(stress_col)) rename_map[["Stress"]] <- stress_col
+  if (!is.null(wake_col)) rename_map[["Wake_Time"]] <- wake_col
+  if (!is.null(restless_col)) rename_map[["Restless_Moments"]] <- restless_col
+  out <- sleep_df_raw %>% rename(!!!rename_map) %>%
     mutate(
       Date = as.Date(Date),
-      across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final)
+      across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration", "Deep_Sleep_Percentage",
+                      "REM_Percentage", "Stress", "Wake_Time", "Restless_Moments")), clean_val_final)
     )
+  if ("Deep_Sleep_Seconds" %in% names(out) || "REM_Seconds" %in% names(out)) {
+    duration_hours_or_seconds <- if ("Sleep_Duration" %in% names(out)) out$Sleep_Duration else rep(NA_real_, nrow(out))
+    duration_seconds <- ifelse(
+      is.na(duration_hours_or_seconds), NA_real_,
+      ifelse(duration_hours_or_seconds > 24, duration_hours_or_seconds, duration_hours_or_seconds * 3600)
+    )
+    if ("Deep_Sleep_Seconds" %in% names(out)) {
+      out$Deep_Sleep_Percentage <- as.numeric(out$Deep_Sleep_Seconds) / duration_seconds * 100
+    }
+    if ("REM_Seconds" %in% names(out)) {
+      out$REM_Percentage <- as.numeric(out$REM_Seconds) / duration_seconds * 100
+    }
+  }
+  out
 }
 if (!"Sleep_Source" %in% names(sleep_complete)) {
   sleep_complete$Sleep_Source <- ifelse(
@@ -2573,7 +2702,7 @@ compute_nightly_sensor_summary <- function(row, sensor_raw, default_sensor, padd
 calendar_daily <- calendar_daily %>% mutate(Date = as.Date(Date))
 
 sleep_rows <- sleep_complete %>%
-  filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
+  filter(!is.na(Date), !is.na(bedtime), !is.na(waketime)) %>%
   left_join(calendar_daily %>% select(Date, Sensor, Sensor_Raw, Flags, Flags_List), by = "Date") %>%
   mutate(
     Sensor = ifelse(is.na(Sensor) & is.na(Sensor_Raw) & !is.na(calendar_default_sensor),
@@ -2716,7 +2845,7 @@ dashboard_df <- build_dashboard_df(outlier_result$all, analysis_df, selected_met
 
 report_nightly_exclusions <- function(sleep_complete, temp_mapped, excluded_outlier_dates_dates, n_before_date_filter, n_after_date_filter, n_before_analysis_filter, n_after_analysis_filter) {
   excluded_sleep_dates <- sleep_complete %>%
-    filter(is.na(Sleep_Score) | is.na(HRV) | is.na(RHR)) %>%
+  filter(is.na(Date) | is.na(bedtime) | is.na(waketime)) %>%
     pull(Date)
 
   excluded_sensor_dates <- temp_mapped %>%
@@ -2814,7 +2943,10 @@ report_nightly_statistics(
 
 # --- Plot helper functions (extracted so the same logic can be called twice) ---
 # Define biomarker variables (sleep quality indicators)
-bio_vars <- intersect(selected_metrics, c("Sleep_Score", "HRV", "RHR"))
+bio_vars <- intersect(selected_metrics, c(
+  "Sleep_Score", "HRV", "RHR", "Deep_Sleep_Percentage", "REM_Percentage",
+  "Stress", "Wake_Time", "Restless_Moments"
+))
   if (length(bio_vars) == 0) {
     warning("No selected bio metrics available for impact analysis; scatter and matrix plots will be skipped.")
   }

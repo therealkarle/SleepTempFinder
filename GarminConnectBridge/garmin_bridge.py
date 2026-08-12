@@ -63,6 +63,22 @@ BASE_ALIASES = {
         "sleepDurationSeconds",
         "totalSleepTime",
     ),
+    "Deep_Sleep_Seconds": (
+        "dailySleepDTO.deepSleepSeconds", "deepSleepSeconds", "deepSleepTimeSeconds",
+    ),
+    "REM_Seconds": (
+        "dailySleepDTO.remSleepSeconds", "remSleepSeconds", "remSleepTimeSeconds",
+    ),
+    "Wake_Time": (
+        "dailySleepDTO.awakeSleepSeconds", "awakeSleepSeconds", "awakeTimeSeconds",
+    ),
+    "Restless_Moments": (
+        "dailySleepDTO.restlessMomentsCount", "restlessMomentsCount", "restlessMoments",
+    ),
+    "Stress": (
+        "dailySleepDTO.avgSleepStress", "dailySleepDTO.averageStressLevel",
+        "averageStressLevel", "avgStressLevel",
+    ),
 }
 
 ENDPOINTS = {
@@ -187,7 +203,7 @@ def make_sleep_row(day: str, payload: Any) -> dict[str, Any]:
         value = pick(flat, aliases)
         if name in ("bedtime", "waketime"):
             value = as_datetime(value)
-        elif name == "Sleep_Duration":
+        elif name in ("Sleep_Duration", "Wake_Time"):
             value = as_seconds(value)
         row[name] = value
     return row
