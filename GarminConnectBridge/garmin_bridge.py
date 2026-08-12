@@ -193,8 +193,10 @@ def build_client() -> Any:
         from garminconnect import Garmin
     except ImportError as exc:
         raise RuntimeError("python-garminconnect is required; install garminconnect and curl_cffi") from exc
-    email = os.getenv("GARMIN_EMAIL") or input("Garmin email: ").strip()
-    password = os.getenv("GARMIN_PASSWORD") or getpass.getpass("Garmin password: ")
+    from garmin_credentials import load_credentials
+    credentials = load_credentials()
+    email = os.getenv("GARMIN_EMAIL") or (credentials[0] if credentials else input("Garmin email: ").strip())
+    password = os.getenv("GARMIN_PASSWORD") or (credentials[1] if credentials else getpass.getpass("Garmin password: "))
     client = Garmin(email, password, prompt_mfa=lambda: input("Garmin MFA code: ").strip())
     token_store = os.getenv("GARMINTOKENS")
     client.login(token_store) if token_store else client.login()

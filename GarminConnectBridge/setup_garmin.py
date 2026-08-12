@@ -12,6 +12,8 @@ import getpass
 import os
 from pathlib import Path
 
+from garmin_credentials import save_credentials
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TOKEN_STORE = PROJECT_ROOT / ".garminconnect"
@@ -41,7 +43,7 @@ def main() -> int:
         return 1
 
     print("Garmin-Connect-Setup")
-    print("Das Passwort wird nur für den Login verwendet und nicht gespeichert.\n")
+    print("Das Passwort wird verschlüsselt per Windows DPAPI gespeichert.\n")
     email = input("Garmin E-Mail: ").strip()
     if not email:
         print("Keine E-Mail angegeben.")
@@ -59,6 +61,7 @@ def main() -> int:
         print(f"Garmin-Login fehlgeschlagen: {exc}")
         return 1
 
+    save_credentials(email, password)
     write_env(email, token_store.resolve())
     try:
         os.chmod(ENV_PATH, 0o600)
@@ -66,7 +69,7 @@ def main() -> int:
         pass
     print(f"\nErfolgreich. Token-Cache: {token_store.resolve()}")
     print(f"Umgebungsdatei erstellt: {ENV_PATH}")
-    print("Das Passwort wurde nicht gespeichert.")
+    print("Das Passwort wurde verschlüsselt lokal gespeichert (Windows DPAPI).")
     return 0
 
 

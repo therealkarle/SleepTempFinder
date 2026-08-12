@@ -294,7 +294,11 @@ If you want, this README can also be extended with a dedicated CSV column refere
   The first login may ask for an MFA code; subsequent runs reuse the wrapper token.
 - Run `python GarminConnectBridge/setup_garmin.py` for interactive setup. It asks for
   E-Mail, password, token location, and MFA when required, then creates the local
-  `.env` file. The password is never saved.
+  `.env` file. On Windows, the password is stored encrypted with DPAPI in
+  `.garmin-credentials.dpapi` and is never stored as plain text.
+- Run `python GarminConnectBridge/mfa_update.py` to refresh the Garmin token and
+  enter a new MFA code. If authentication has expired, the script shows a Windows
+  notification and exits with an error.
 - Install the bridge dependencies with `pip install -r GarminConnectBridge/requirements.txt`.
 - Garmin raw responses are cached under `.cache/garmin`; SleepScoreBattle responses are
   cached under `.cache/sleepscorebattle`. Expired cache entries are used only as a
