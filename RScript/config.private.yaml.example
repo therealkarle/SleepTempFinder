@@ -9,14 +9,18 @@
 sleep_source:
   mode: "garmin"
   priority: "garmin"
+  query:
+    days: 30
+    date_start: ""
+    date_end: ""
   garmin:
     token_store: ""
-    cache_dir: "../.cache/garmin"
+    cache_dir: "../Cache/garmin"
     cache_ttl_seconds: 86400
     metrics: []
     lifestyle_logging:
       enabled: true
-      output_dir: "../.cache/garmin/lifestyle_logging"
+      output_dir: "../Cache/garmin/lifestyle_logging"
   sleepscorebattle:
     enabled: true
     # Empty loads all returned custom fields, including pre-sleep HR,
@@ -26,7 +30,7 @@ sleep_source:
     user_id: ""
     user_email: ""
     bearer_token: ""
-    cache_dir: "../.cache/sleepscorebattle"
+    cache_dir: "../Cache/sleepscorebattle"
     cache_ttl_seconds: 86400
 
 # sleep_source:

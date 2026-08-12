@@ -37,12 +37,32 @@ load_project_env()
 
 BASE_ALIASES = {
     "Date": ("calendarDate", "date", "sleepDate", "sleepDay"),
-    "bedtime": ("sleepStartTimestampLocal", "sleepStartTimeLocal", "sleepStart"),
-    "waketime": ("sleepEndTimestampLocal", "sleepEndTimeLocal", "sleepEnd"),
-    "Sleep_Score": ("sleepScores.overall.value", "sleepScore", "overallSleepScore"),
+    "bedtime": (
+        "dailySleepDTO.sleepStartTimestampLocal",
+        "sleepStartTimestampLocal",
+        "sleepStartTimeLocal",
+        "sleepStart",
+    ),
+    "waketime": (
+        "dailySleepDTO.sleepEndTimestampLocal",
+        "sleepEndTimestampLocal",
+        "sleepEndTimeLocal",
+        "sleepEnd",
+    ),
+    "Sleep_Score": (
+        "dailySleepDTO.sleepScores.overall.value",
+        "sleepScores.overall.value",
+        "sleepScore",
+        "overallSleepScore",
+    ),
     "HRV": ("avgOvernightHrv", "averageOvernightHrv", "overnightHrv"),
     "RHR": ("restingHeartRate", "restingHr", "restingHeartRateValue"),
-    "Sleep_Duration": ("totalSleepTimeSeconds", "sleepDurationSeconds", "totalSleepTime"),
+    "Sleep_Duration": (
+        "dailySleepDTO.sleepTimeSeconds",
+        "totalSleepTimeSeconds",
+        "sleepDurationSeconds",
+        "totalSleepTime",
+    ),
 }
 
 ENDPOINTS = {
@@ -212,6 +232,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metrics", default="")
     parser.add_argument("--identity", default="default")
     parser.add_argument("--lifestyle-output-dir", default="")
+    parser.add_argument("--output", required=True)
     return parser.parse_args()
 
 
@@ -226,6 +247,7 @@ def main() -> int:
     day = start
     while day <= end:
         day_text = day.isoformat()
+        print(f"Garmin: loading {day_text}", file=sys.stderr, flush=True)
         sleep = fetch_cached(client, "get_sleep_data", day_text, [day_text], cache_dir=cache_dir, ttl=args.ttl, identity=args.identity)
         row = make_sleep_row(day_text, sleep)
         for metric in sorted(metrics):
@@ -245,7 +267,10 @@ def main() -> int:
                 merge_endpoint_metric(row, metric, payload)
         rows.append(row)
         day += timedelta(days=1)
-    print(json.dumps(rows, ensure_ascii=False))
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    print(f"Garmin result written: {output_path}", file=sys.stderr)
     return 0
 
 

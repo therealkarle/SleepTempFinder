@@ -24,6 +24,27 @@ class GarminBridgeTests(unittest.TestCase):
         self.assertEqual(row["Sleep_Duration"], 7)
         self.assertTrue(row["bedtime"])
 
+    def test_sleep_mapping_matches_nested_garmin_response(self):
+        row = make_sleep_row(
+            "2026-08-10",
+            {
+                "dailySleepDTO": {
+                    "sleepStartTimestampLocal": 1780000000000,
+                    "sleepEndTimestampLocal": 1780025200000,
+                    "sleepTimeSeconds": 25200,
+                    "sleepScores": {"overall": {"value": 88}},
+                },
+                "avgOvernightHrv": 52,
+                "restingHeartRate": 49,
+            },
+        )
+        self.assertEqual(row["Sleep_Score"], 88)
+        self.assertEqual(row["HRV"], 52)
+        self.assertEqual(row["RHR"], 49)
+        self.assertEqual(row["Sleep_Duration"], 7)
+        self.assertTrue(row["bedtime"])
+        self.assertTrue(row["waketime"])
+
     def test_cache_envelope_and_staleness(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "cache.json"

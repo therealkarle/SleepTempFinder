@@ -188,13 +188,13 @@ if (nzchar(sleep_api_base_url)) {
 sleep_api_user_id <- trimws(as.character(sleep_api_cfg$user_id %||% ""))
 sleep_api_user_email <- trimws(as.character(sleep_api_cfg$user_email %||% ""))
 sleep_api_bearer_token <- trimws(as.character(sleep_api_cfg$bearer_token %||% Sys.getenv("API_INTERNAL_SECRET", unset = "")))
-sleep_api_cache_dir <- path.expand(as.character(sleep_api_cfg$cache_dir %||% file.path(script_directory, "..", ".cache", "sleepscorebattle")))
+sleep_api_cache_dir <- path.expand(as.character(sleep_api_cfg$cache_dir %||% file.path(script_directory, "..", "Cache", "sleepscorebattle")))
 sleep_api_cache_ttl <- as.numeric(sleep_api_cfg$cache_ttl_seconds %||% 86400)
 sleep_api_metrics <- trimws(unlist(sleep_api_cfg$metrics %||% character(0)))
 
 garmin_cfg <- sleep_source_cfg$garmin %||% list()
 garmin_bridge_path <- file.path(script_directory, "..", "GarminConnectBridge", "garmin_bridge.py")
-garmin_cache_dir <- path.expand(as.character(garmin_cfg$cache_dir %||% file.path(script_directory, "..", ".cache", "garmin")))
+garmin_cache_dir <- path.expand(as.character(garmin_cfg$cache_dir %||% file.path(script_directory, "..", "Cache", "garmin")))
 garmin_token_store <- path.expand(as.character(garmin_cfg$token_store %||% Sys.getenv("GARMINTOKENS", unset = "")))
 garmin_cache_ttl <- as.integer(garmin_cfg$cache_ttl_seconds %||% 86400)
 garmin_metrics <- trimws(unlist(garmin_cfg$metrics %||% character(0)))
@@ -312,10 +312,14 @@ normalize_sleep_api_rows <- function(df, mapping) {
       ))
     }
   }
+  if ("Date" %in% names(df)) {
+    df$Date <- as.Date(df$Date)
+  }
   df
 }
 
-read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
+read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL,
+                           enrichment_only = FALSE) {
   if (!nzchar(sleep_api_base_url)) {
     stop("sleep_source.sleepscorebattle.base_url (or sleep_source.api.base_url) is required in config.private.yaml.")
   }
@@ -333,8 +337,13 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
 
   api_get_json <- function(path, query_parts = character(0)) {
     dir.create(sleep_api_cache_dir, recursive = TRUE, showWarnings = FALSE)
-    cache_id <- gsub("[^A-Za-z0-9_.-]", "_", paste(c(path, query_parts), collapse = "__"))
-    cache_path <- file.path(sleep_api_cache_dir, paste0(substr(cache_id, 1, 180), ".json"))
+    cache_id <- paste(c(path, query_parts), collapse = "__")
+    cache_key_file <- tempfile("sleepscorebattle-cache-key-")
+    writeLines(cache_id, cache_key_file, useBytes = TRUE)
+    cache_hash <- unname(tools::md5sum(cache_key_file))
+    unlink(cache_key_file)
+    endpoint_name <- gsub("[^A-Za-z0-9_.-]", "_", basename(path))
+    cache_path <- file.path(sleep_api_cache_dir, paste0(endpoint_name, "-", cache_hash, ".json"))
     cached_payload <- NULL
     if (file.exists(cache_path)) {
       cache_age <- as.numeric(difftime(Sys.time(), file.info(cache_path)$mtime, units = "secs"))
@@ -419,24 +428,31 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
   }
 
   rows <- normalize_sleep_api_rows(rows, mapping)
-  required_cols <- c(
-    "Date",
-    "bedtime",
-    "waketime",
-    mapping$garmin_sleep_score,
-    mapping$garmin_rhr
-  )
+  required_cols <- if (isTRUE(enrichment_only)) {
+    "Date"
+  } else {
+    c(
+      "Date",
+      "bedtime",
+      "waketime",
+      mapping$garmin_sleep_score,
+      mapping$garmin_rhr
+    )
+  }
   missing_cols <- setdiff(required_cols, names(rows))
   if (length(missing_cols) > 0) {
     stop("Sleep API export is missing required column(s): ", paste(missing_cols, collapse = ", "))
   }
 
-  rows <- rows %>%
-    mutate(
-      Date = as.Date(Date),
-      bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
-      waketime = parse_datetime_safe(waketime, type = "garmin_time")
-    ) %>%
+  if (isTRUE(enrichment_only)) {
+    rows <- rows %>% mutate(Date = as.Date(Date))
+  } else {
+    rows <- rows %>%
+      mutate(
+        Date = as.Date(Date),
+        bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
+        waketime = parse_datetime_safe(waketime, type = "garmin_time")
+      ) %>%
     mutate(
       waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
       bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date))
@@ -457,7 +473,8 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
       waketime = if_else(.missing_window, as.POSIXct(Date) + hours(12), waketime)
     ) %>%
     mutate(bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
-    select(-.bedtime_orig, -.waketime_orig, -.swap_flag, -.missing_window)
+      select(-.bedtime_orig, -.waketime_orig, -.swap_flag, -.missing_window)
+  }
 
   source_label <- if (nzchar(sleep_api_user_id)) {
     paste0("api://user_id=", sleep_api_user_id)
@@ -476,9 +493,6 @@ read_garmin_bridge <- function(date_start, date_end) {
   if (!file.exists(garmin_bridge_path)) {
     stop("Garmin bridge not found: ", garmin_bridge_path)
   }
-  if (!nzchar(Sys.getenv("GARMIN_EMAIL", unset = "")) && !interactive()) {
-    stop("GARMIN_EMAIL must be set for non-interactive Garmin Connect runs.")
-  }
   if (nzchar(garmin_token_store)) Sys.setenv(GARMINTOKENS = garmin_token_store)
   python_bin <- Sys.getenv("PYTHON", unset = "python")
   metric_arg <- paste(garmin_metrics, collapse = ",")
@@ -489,14 +503,28 @@ read_garmin_bridge <- function(date_start, date_end) {
     "--cache-dir", garmin_cache_dir,
     "--ttl", as.character(garmin_cache_ttl),
     "--metrics", metric_arg,
-    "--lifestyle-output-dir", garmin_lifestyle_output_dir
+    "--lifestyle-output-dir", garmin_lifestyle_output_dir,
+    "--output", tempfile("garmin-result-", fileext = ".json")
   )
-  output <- system2(python_bin, args = args, stdout = TRUE, stderr = TRUE)
+  output_index <- match("--output", args) + 1L
+  bridge_output <- args[[output_index]]
+  on.exit(unlink(bridge_output), add = TRUE)
+  bridge_stderr <- tempfile("garmin-bridge-", fileext = ".log")
+  on.exit(unlink(bridge_stderr), add = TRUE)
+  output <- system2(python_bin, args = args, stdout = TRUE, stderr = bridge_stderr)
+  bridge_messages <- if (file.exists(bridge_stderr)) {
+    readLines(bridge_stderr, warn = FALSE, encoding = "UTF-8")
+  } else {
+    character(0)
+  }
+  if (length(bridge_messages) > 0) {
+    cat(paste(bridge_messages, collapse = "\n"), "\n")
+  }
   status <- attr(output, "status") %||% 0L
   if (!identical(as.integer(status), 0L)) {
-    stop("Garmin bridge failed:\n", paste(output, collapse = "\n"))
+    stop("Garmin bridge failed:\n", paste(c(bridge_messages, output), collapse = "\n"))
   }
-  json_lines <- output[!grepl("^(Warning:|Garmin bridge failed:)", output)]
+  json_lines <- readLines(bridge_output, warn = FALSE, encoding = "UTF-8")
   payload <- tryCatch(
     jsonlite::fromJSON(paste(json_lines, collapse = "\n"), flatten = TRUE),
     error = function(e) stop("Failed to parse Garmin bridge response: ", conditionMessage(e))
@@ -504,34 +532,31 @@ read_garmin_bridge <- function(date_start, date_end) {
   rows <- as_tibble(payload, .name_repair = "unique")
   if (nrow(rows) == 0) stop("Garmin Connect returned no sleep rows.")
   rows <- normalize_sleep_api_rows(rows, mapping)
-  if (length(sleep_api_metrics) > 0) {
-    requested_norm <- normalize_api_name(sleep_api_metrics)
-    metric_patterns <- list(
-      pre_sleep_hr = "pre.?sleep|before.?sleep|bedtime.?hr|sleep.?hr|heart.?rate.?before|hr.?before",
-      sleep_respiration = "respirat|breath|atem|breathing",
-      time_in_bed = "time.?in.?bed|bed.?time|bett|in.?bed",
-      sleep_latency = "latency|fall.?asleep|einschlaf"
-    )
-    required_keep <- c(
-      "Date", "bedtime", "waketime", mapping$garmin_sleep_score,
-      mapping$garmin_hrv, mapping$garmin_rhr, mapping$garmin_duration
-    )
-    selected_extra <- names(rows)[normalize_api_name(names(rows)) %in% requested_norm]
-    for (metric_name in intersect(names(metric_patterns), sleep_api_metrics)) {
-      selected_extra <- unique(c(
-        selected_extra,
-        names(rows)[grepl(metric_patterns[[metric_name]], names(rows), ignore.case = TRUE)]
-      ))
-    }
-    rows <- rows[, unique(c(intersect(required_keep, names(rows)), selected_extra,
-                            "Source_File", "Source_Name")), drop = FALSE]
+  required_cols <- c(
+    "Date", "bedtime", "waketime", mapping$garmin_sleep_score,
+    mapping$garmin_hrv, mapping$garmin_rhr
+  )
+  missing_cols <- setdiff(required_cols, names(rows))
+  if (length(missing_cols) > 0) {
+    stop("Garmin Connect response is missing required column(s): ", paste(missing_cols, collapse = ", "))
   }
-  rows %>%
+  rows <- rows %>%
+    mutate(
+      Date = as.Date(Date),
+      bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
+      waketime = parse_datetime_safe(waketime, type = "garmin_time")
+    ) %>%
+    mutate(
+      waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
+      bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date)),
+      bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)
+    ) %>%
     mutate(
       Source_File = paste0("garmin://", format(as.Date(date_start), "%Y-%m-%d"), "_", format(as.Date(date_end), "%Y-%m-%d")),
       Source_Name = "Garmin Connect API",
       Sleep_Source = "garmin"
     )
+  rows
 }
 
 # determine the default sensor from sensor_files.default = true, falling back
@@ -1035,6 +1060,11 @@ parse_datetime_safe <- function(x, type = "garmin_datetime") {
     return(parse_date_time(x_clean, quiet = TRUE))
   }
   res <- parse_date_time(x_clean, orders = orders[[type]], quiet = TRUE)
+  if (type == "garmin_time" && any(is.na(res))) {
+    iso_res <- suppressWarnings(ymd_hms(x_clean, quiet = TRUE))
+    replace_idx <- is.na(res) & !is.na(iso_res)
+    res[replace_idx] <- iso_res[replace_idx]
+  }
   # warn only for actual parse failures; plain missing values are expected
   if (length(res) > 0 && any(is.na(res))) {
     x_chr <- as.character(x)
@@ -1055,6 +1085,7 @@ sensor_locale <- locale(decimal_mark = loc$decimal_mark %||% ",")
 list_csv_files <- function(dir, recursive = FALSE) {
   if (!dir.exists(dir)) return(character(0))
   files <- list.files(path = dir, pattern = "\\.csv$", recursive = recursive, full.names = TRUE)
+  files <- files[!grepl("(^|[/\\\\])Cache([/\\\\]|$)", files, ignore.case = TRUE)]
   normalizePath(files, winslash = "/", mustWork = FALSE)
 }
 
@@ -1762,9 +1793,13 @@ if (!is.null(cli_filter) && length(cli_filter$sensor_include) > 0) {
   config$analysis_filter$sensor_include <- cli_filter$sensor_include
 }
 
+empty_calendar_daily <- function() {
+  tibble(Date = as.Date(character()), Sensor = character(), Sensor_Raw = character(), Flags = character(), Flags_List = list())
+}
+
 load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   if (is.null(calendar_cfg) || !isTRUE(calendar_cfg$enabled)) {
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   mode <- tolower(calendar_cfg$mode %||% "url")
@@ -1773,11 +1808,11 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
 
   if (mode == "url" && url_value == "") {
     cat("Calendar enabled but URL is empty. Calendar assignments skipped.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
   if (mode == "file" && file_value == "") {
     cat("Calendar enabled but file_path is empty. Calendar assignments skipped.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   lines <- tryCatch(read_ics_lines(mode = mode, url_value = url_value, file_value = file_value),
@@ -1786,7 +1821,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
                       character(0)
                     })
   if (length(lines) == 0) {
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   unfolded <- unfold_ics_lines(lines)
@@ -1795,7 +1830,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   n_events <- min(length(begin_idx), length(end_idx))
   if (n_events == 0) {
     cat("Calendar loaded, but no VEVENT entries found.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   event_rows <- vector("list", n_events)
@@ -1856,7 +1891,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   events_daily <- bind_rows(event_rows)
   if (nrow(events_daily) == 0) {
     cat("Calendar events found, but no Sensor/Flags metadata parsed.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   calendar_daily <- events_daily %>%
@@ -1877,7 +1912,9 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
     cat(sprintf("Calendar warning: %d day(s) had conflicting sensors and were set to NA.\n", conflicting_sensor_days))
   }
 
-  calendar_daily <- calendar_daily %>% select(Date, Sensor, Flags, Flags_List)
+  calendar_daily <- calendar_daily %>%
+    mutate(Sensor_Raw = Sensor) %>%
+    select(Date, Sensor, Sensor_Raw, Flags, Flags_List)
 
   cat(sprintf("Calendar loaded: %d days parsed.\n\n", nrow(calendar_daily)))
   calendar_daily
@@ -2094,7 +2131,11 @@ classification <- local({
     character(0)
   }
   unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
-  cat(sprintf("Sleep candidates: %d\n", length(sleep_candidates)))
+    if (sleep_source_uses_csv) {
+      cat(sprintf("Sleep candidates: %d\n", length(sleep_candidates)))
+    } else {
+      cat("Sleep CSV scan skipped (active source: ", sleep_source_mode, ").\n", sep = "")
+    }
   if (isTRUE(verbose) && length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
   # show canonical names
   if (isTRUE(verbose) && length(sleep_candidates) > 0) {
@@ -2143,7 +2184,21 @@ all_sensor_files <- classification$all_sensor_files
 # explicit lists from config are still respected but merged with discoveries
 # (handled above in the classification block)
 
-mapping <- config$column_names
+ mapping <- config$column_names
+
+ # Direct `source()` runs still need an API query window. Use an optional
+ # configured range, defaulting to the last 365 days through today.
+ sleep_query_cfg <- sleep_source_cfg$query %||% list()
+ query_start_value <- trimws(as.character(sleep_query_cfg$date_start %||% ""))
+ query_end_value <- trimws(as.character(sleep_query_cfg$date_end %||% ""))
+ query_days <- suppressWarnings(as.integer(sleep_query_cfg$days %||% 30L))
+ if (is.na(query_days) || query_days < 1L) query_days <- 30L
+ start_date <- if (nzchar(query_start_value)) as.Date(query_start_value) else Sys.Date() - lubridate::days(query_days - 1L)
+ end_date <- if (nzchar(query_end_value)) as.Date(query_end_value) else Sys.Date()
+ if (is.na(start_date) || is.na(end_date) || end_date < start_date) {
+   stop("Invalid sleep_source.query.date_start/date_end; expected YYYY-MM-DD with date_end >= date_start.")
+ }
+ cat(sprintf("Sleep API query window: %s -> %s (%d days)\n", start_date, end_date, as.integer(end_date - start_date) + 1L))
 
 # read sleep data, track source file and canonical name per row
 sleep_df_raw <- if (sleep_source_mode == "api") {
@@ -2336,16 +2391,32 @@ if (sleep_source_uses_api && exists("sensor_raw")) {
 # Garmin is the default source. SleepScoreBattle can optionally enrich the
 # Garmin row with custom metrics such as sleep latency, time in bed, and the
 # pre-sleep heart rate. Garmin remains authoritative for duplicate base fields.
-if (sleep_source_mode == "garmin" && sleep_scb_enabled) {
-  scb_df <- read_sleep_api(mapping, date_start = start_date, date_end = end_date)
-  sleep_df_raw <- merge_sleep_sources(
-    sleep_df_raw,
-    scb_df,
-    primary_label = "garmin",
-    secondary_label = "api",
-    priority = "csv",
-    skip_fields = character(0)
-  )
+if (sleep_source_mode == "garmin" && sleep_scb_enabled && nzchar(sleep_api_base_url) && nzchar(sleep_api_bearer_token) && (nzchar(sleep_api_user_id) || nzchar(sleep_api_user_email))) {
+  sleep_df_raw <- tryCatch({
+    scb_df <- read_sleep_api(
+      mapping,
+      date_start = start_date,
+      date_end = end_date,
+      enrichment_only = TRUE
+    )
+    merge_sleep_sources(
+      sleep_df_raw,
+      scb_df,
+      primary_label = "garmin",
+      secondary_label = "api",
+      priority = "csv",
+      skip_fields = character(0)
+    )
+  }, error = function(e) {
+    warning(
+      "SleepScoreBattle enrichment failed and was skipped: ",
+      conditionMessage(e),
+      ". Garmin data remains active."
+    )
+    sleep_df_raw
+  })
+} else if (sleep_source_mode == "garmin" && sleep_scb_enabled) {
+  warning("SleepScoreBattle enrichment skipped: base_url, bearer_token and user_id/user_email must all be configured. Garmin data remains active.")
 }
 
 # In pure 'csv' mode, null out unreliable CSV fields (e.g. HRV) since there
@@ -2436,7 +2507,10 @@ sleep_complete <- {
   if (!is.null(rhr_col)) rename_map[["RHR"]] <- rhr_col
   if (!is.null(duration_col)) rename_map[["Sleep_Duration"]] <- duration_col
   sleep_df_raw %>% rename(!!!rename_map) %>%
-    mutate(across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final))
+    mutate(
+      Date = as.Date(Date),
+      across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final)
+    )
 }
 if (!"Sleep_Source" %in% names(sleep_complete)) {
   sleep_complete$Sleep_Source <- ifelse(
@@ -2496,7 +2570,9 @@ compute_nightly_sensor_summary <- function(row, sensor_raw, default_sensor, padd
     )
 }
 
-sleep_rows <- sleep_complete %>% 
+calendar_daily <- calendar_daily %>% mutate(Date = as.Date(Date))
+
+sleep_rows <- sleep_complete %>%
   filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
   left_join(calendar_daily %>% select(Date, Sensor, Sensor_Raw, Flags, Flags_List), by = "Date") %>%
   mutate(
@@ -2504,6 +2580,26 @@ sleep_rows <- sleep_complete %>%
                     calendar_default_sensor,
                     Sensor)
   )
+
+if (nrow(sleep_rows) == 0) {
+  available_counts <- vapply(
+    c("Sleep_Score", "HRV", "RHR"),
+    function(metric) {
+      if (!metric %in% names(sleep_complete)) return(0L)
+      sum(!is.na(sleep_complete[[metric]]))
+    },
+    integer(1)
+  )
+  stop(sprintf(
+    paste0(
+      "No sleep nights contain all required Garmin metrics (Sleep_Score, HRV, RHR). ",
+      "Non-missing values: Sleep_Score=%d, HRV=%d, RHR=%d."
+    ),
+    available_counts[["Sleep_Score"]],
+    available_counts[["HRV"]],
+    available_counts[["RHR"]]
+  ))
+}
 
 temp_mapped <- if (nrow(sleep_rows) == 0) {
   sleep_rows

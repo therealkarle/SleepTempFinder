@@ -269,15 +269,20 @@ sleep_source:
   mode: "garmin"
   priority: "garmin"
   csv_skip_fields: ["HRV"]
+  query:
+    # Optional API query window. Empty dates default to the last 30 days.
+    days: 30
+    date_start: ""
+    date_end: ""
   garmin:
-    cache_dir: "../.cache/garmin"
+    cache_dir: "../Cache/garmin"
     token_store: ""
     cache_ttl_seconds: 86400
     # Optional: hrv, respiration, spo2, stress, body_battery, heart_rate
     metrics: []
     lifestyle_logging:
       enabled: true
-      output_dir: "../.cache/garmin/lifestyle_logging"
+      output_dir: "../Cache/garmin/lifestyle_logging"
   sleepscorebattle:
     enabled: true
     # Empty means: load every custom field returned by SleepScoreBattle,
@@ -288,7 +293,7 @@ sleep_source:
     user_id: ""
     user_email: ""
     bearer_token: ""
-    cache_dir: "../.cache/sleepscorebattle"
+    cache_dir: "../Cache/sleepscorebattle"
     cache_ttl_seconds: 86400
 
 # --- OUTLIER FILTER ---
