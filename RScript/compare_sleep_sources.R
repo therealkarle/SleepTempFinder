@@ -57,7 +57,7 @@ csv_skip_fields <- if (hrv_enabled) {
 csv_skip_fields <- csv_skip_fields[csv_skip_fields != ""]
 
 sleep_api_cfg <- sleep_source_cfg$api %||% config$api %||% list()
-sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% "https://sleepscoreprivate.onrender.com"))
+sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% ""))
 if (nzchar(sleep_api_base_url)) {
   sleep_api_base_url <- sub("/+$", "", sleep_api_base_url)
 }

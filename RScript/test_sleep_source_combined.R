@@ -5,6 +5,9 @@ source(file.path("RScript", "sleep_source_combined_helpers.R"), local = FALSE)
 
 stopifnot(identical(normalize_sleep_source_mode(" combined "), "combined"))
 stopifnot(identical(normalize_sleep_source_priority(" api "), "api"))
+stopifnot(identical(normalize_sleep_source_mode(" sleepscorebattle "), "api"))
+stopifnot(identical(normalize_sleep_source_mode(" garmin "), "garmin"))
+stopifnot(identical(normalize_sleep_source_priority(" garmin "), "garmin"))
 
 ranges <- split_date_ranges(as.Date(c("2026-07-01", "2026-07-02", "2026-07-04", "2026-07-05")))
 stopifnot(length(ranges) == 2L)
@@ -55,3 +58,14 @@ merged_api_first <- merge_sleep_source_rows(csv_df, api_df, "api")
 stopifnot(merged_api_first$Sleep_Source[match(as.Date("2026-07-01"), merged_api_first$Date)] == "api")
 
 cat("sleep_source combined checks OK\n")
+
+garmin_df <- api_df
+garmin_df$Garmin_respiration <- c(14, 15)
+scb_df <- api_df[, c("Date", "Sleep_Score", "Source_File", "Source_Name")]
+scb_df$Sleep_Latency_Minutes <- c(12, 18)
+enriched <- merge_sleep_sources(garmin_df, scb_df, "garmin", "api", "csv")
+stopifnot("Sleep_Latency_Minutes" %in% names(enriched))
+stopifnot(all(enriched$Sleep_Latency_Minutes[match(api_df$Date, enriched$Date)] == c(12, 18)))
+stopifnot(all(enriched$Sleep_Source[match(api_df$Date, enriched$Date)] == "garmin"))
+
+cat("garmin enrichment checks OK\n")

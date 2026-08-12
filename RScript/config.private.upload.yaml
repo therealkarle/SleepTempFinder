@@ -9,7 +9,7 @@ sleep_source:
   mode: "combined"
   priority: "csv"
   api:
-    base_url: "https://sleepscoreprivate.onrender.com"
+    base_url: ""
     user_id: ""
     user_email: ""
     bearer_token: ""

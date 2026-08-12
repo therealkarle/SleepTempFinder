@@ -173,20 +173,36 @@ if (is.null(config$sensor_files) && !is.null(config$temp_files)) {
   cat("Config warning: 'temp_files' renamed to 'sensor_files' for clarity\n")
 }
 
-# Sleep input can come from the legacy CSV scan or from the Sleep Score API.
+# Sleep input can come from legacy CSV, SleepScoreBattle, or Garmin Connect.
 sleep_source_cfg <- config$sleep_source %||% list()
-sleep_source_mode <- normalize_sleep_source_mode(sleep_source_cfg$mode %||% "csv")
+sleep_source_mode <- normalize_sleep_source_mode(sleep_source_cfg$mode %||% "garmin")
 sleep_source_priority <- normalize_sleep_source_priority(sleep_source_cfg$priority %||% "csv")
 sleep_source_uses_csv <- sleep_source_mode %in% c("csv", "combined")
 sleep_source_uses_api <- sleep_source_mode %in% c("api", "combined")
-sleep_api_cfg <- sleep_source_cfg$api %||% list()
-sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% "https://sleepscoreprivate.onrender.com"))
+sleep_source_uses_garmin <- sleep_source_mode %in% c("garmin")
+sleep_api_cfg <- sleep_source_cfg$sleepscorebattle %||% sleep_source_cfg$api %||% list()
+sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% ""))
 if (nzchar(sleep_api_base_url)) {
   sleep_api_base_url <- sub("/+$", "", sleep_api_base_url)
 }
 sleep_api_user_id <- trimws(as.character(sleep_api_cfg$user_id %||% ""))
 sleep_api_user_email <- trimws(as.character(sleep_api_cfg$user_email %||% ""))
 sleep_api_bearer_token <- trimws(as.character(sleep_api_cfg$bearer_token %||% Sys.getenv("API_INTERNAL_SECRET", unset = "")))
+sleep_api_cache_dir <- path.expand(as.character(sleep_api_cfg$cache_dir %||% file.path(script_directory, "..", ".cache", "sleepscorebattle")))
+sleep_api_cache_ttl <- as.numeric(sleep_api_cfg$cache_ttl_seconds %||% 86400)
+sleep_api_metrics <- trimws(unlist(sleep_api_cfg$metrics %||% character(0)))
+
+garmin_cfg <- sleep_source_cfg$garmin %||% list()
+garmin_bridge_path <- file.path(script_directory, "..", "GarminConnectBridge", "garmin_bridge.py")
+garmin_cache_dir <- path.expand(as.character(garmin_cfg$cache_dir %||% file.path(script_directory, "..", ".cache", "garmin")))
+garmin_token_store <- path.expand(as.character(garmin_cfg$token_store %||% Sys.getenv("GARMINTOKENS", unset = "")))
+garmin_cache_ttl <- as.integer(garmin_cfg$cache_ttl_seconds %||% 86400)
+garmin_metrics <- trimws(unlist(garmin_cfg$metrics %||% character(0)))
+if (isTRUE(garmin_cfg$lifestyle_logging$enabled)) {
+  garmin_metrics <- unique(c(garmin_metrics, "lifestyle_logging"))
+}
+garmin_metrics <- garmin_metrics[nzchar(garmin_metrics)]
+sleep_scb_enabled <- isTRUE(sleep_source_cfg$sleepscorebattle$enabled %||% FALSE)
 
 normalize_api_name <- function(x) {
   gsub("[^a-z0-9]+", "", tolower(as.character(x)))
@@ -297,6 +313,9 @@ normalize_sleep_api_rows <- function(df, mapping) {
 }
 
 read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
+  if (!nzchar(sleep_api_base_url)) {
+    stop("sleep_source.sleepscorebattle.base_url (or sleep_source.api.base_url) is required in config.private.yaml.")
+  }
   if (!nzchar(sleep_api_bearer_token)) {
     stop("sleep_source.api.bearer_token is required in config.private.yaml (or set API_INTERNAL_SECRET).")
   }
@@ -310,6 +329,17 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
   options(timeout = max(old_timeout, 300))
 
   api_get_json <- function(path, query_parts = character(0)) {
+    dir.create(sleep_api_cache_dir, recursive = TRUE, showWarnings = FALSE)
+    cache_id <- gsub("[^A-Za-z0-9_.-]", "_", paste(c(path, query_parts), collapse = "__"))
+    cache_path <- file.path(sleep_api_cache_dir, paste0(substr(cache_id, 1, 180), ".json"))
+    cached_payload <- NULL
+    if (file.exists(cache_path)) {
+      cache_age <- as.numeric(difftime(Sys.time(), file.info(cache_path)$mtime, units = "secs"))
+      cached_payload <- tryCatch(jsonlite::fromJSON(cache_path, simplifyVector = FALSE)$payload, error = function(e) NULL)
+      if (!is.null(cached_payload) && is.finite(cache_age) && cache_age <= sleep_api_cache_ttl) {
+        return(cached_payload)
+      }
+    }
     request_url <- paste0(
       sleep_api_base_url, path,
       if (length(query_parts) > 0) paste0("?", paste(query_parts, collapse = "&")) else ""
@@ -325,12 +355,29 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
     on.exit(try(close(con), silent = TRUE), add = TRUE)
     raw_text <- tryCatch(
       readLines(con, warn = FALSE, encoding = "UTF-8"),
-      error = function(e) stop("Failed to read Sleep API response: ", conditionMessage(e))
+      error = function(e) {
+        msg <- conditionMessage(e)
+        if (!is.null(cached_payload) && !grepl("401|403|unauthoriz|forbidden", tolower(msg))) {
+          warning("Using stale SleepScoreBattle cache for ", path)
+          return(cached_payload)
+        }
+        stop("Failed to read Sleep API response: ", msg)
+      }
     )
-    tryCatch(
+    if (!is.character(raw_text)) return(raw_text)
+    payload <- tryCatch(
       jsonlite::fromJSON(paste(raw_text, collapse = "\n"), flatten = TRUE),
       error = function(e) stop("Failed to parse Sleep API JSON: ", conditionMessage(e))
     )
+    tryCatch(
+      jsonlite::write_json(
+        list(source = "sleepscorebattle", endpoint = path,
+             fetched_at = format(Sys.time(), tz = "UTC"), payload = payload),
+        cache_path, auto_unbox = TRUE, pretty = FALSE
+      ),
+      error = function(e) warning("Could not write SleepScoreBattle cache: ", conditionMessage(e))
+    )
+    payload
   }
 
   user_id <- sleep_api_user_id
@@ -413,6 +460,55 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
     mutate(
       Source_File = source_label,
       Source_Name = "Sleep Score Private API"
+    )
+}
+
+read_garmin_bridge <- function(date_start, date_end) {
+  if (!file.exists(garmin_bridge_path)) {
+    stop("Garmin bridge not found: ", garmin_bridge_path)
+  }
+  if (!nzchar(Sys.getenv("GARMIN_EMAIL", unset = "")) && !interactive()) {
+    stop("GARMIN_EMAIL must be set for non-interactive Garmin Connect runs.")
+  }
+  if (nzchar(garmin_token_store)) Sys.setenv(GARMINTOKENS = garmin_token_store)
+  python_bin <- Sys.getenv("PYTHON", unset = "python")
+  metric_arg <- paste(garmin_metrics, collapse = ",")
+  args <- c(
+    garmin_bridge_path,
+    "--start", format(as.Date(date_start), "%Y-%m-%d"),
+    "--end", format(as.Date(date_end), "%Y-%m-%d"),
+    "--cache-dir", garmin_cache_dir,
+    "--ttl", as.character(garmin_cache_ttl),
+    "--metrics", metric_arg
+  )
+  output <- system2(python_bin, args = args, stdout = TRUE, stderr = TRUE)
+  status <- attr(output, "status") %||% 0L
+  if (!identical(as.integer(status), 0L)) {
+    stop("Garmin bridge failed:\n", paste(output, collapse = "\n"))
+  }
+  json_lines <- output[!grepl("^(Warning:|Garmin bridge failed:)", output)]
+  payload <- tryCatch(
+    jsonlite::fromJSON(paste(json_lines, collapse = "\n"), flatten = TRUE),
+    error = function(e) stop("Failed to parse Garmin bridge response: ", conditionMessage(e))
+  )
+  rows <- as_tibble(payload, .name_repair = "unique")
+  if (nrow(rows) == 0) stop("Garmin Connect returned no sleep rows.")
+  rows <- normalize_sleep_api_rows(rows, mapping)
+  if (length(sleep_api_metrics) > 0) {
+    requested_norm <- normalize_api_name(sleep_api_metrics)
+    required_keep <- c(
+      "Date", "bedtime", "waketime", mapping$garmin_sleep_score,
+      mapping$garmin_hrv, mapping$garmin_rhr, mapping$garmin_duration
+    )
+    selected_extra <- names(rows)[normalize_api_name(names(rows)) %in% requested_norm]
+    rows <- rows[, unique(c(intersect(required_keep, names(rows)), selected_extra,
+                            "Source_File", "Source_Name")), drop = FALSE]
+  }
+  rows %>%
+    mutate(
+      Source_File = paste0("garmin://", format(as.Date(date_start), "%Y-%m-%d"), "_", format(as.Date(date_end), "%Y-%m-%d")),
+      Source_Name = "Garmin Connect API",
+      Sleep_Source = "garmin"
     )
 }
 
@@ -2030,6 +2126,8 @@ mapping <- config$column_names
 # read sleep data, track source file and canonical name per row
 sleep_df_raw <- if (sleep_source_mode == "api") {
   read_sleep_api(mapping)
+} else if (sleep_source_mode == "garmin") {
+  read_garmin_bridge(start_date, end_date)
 } else {
 read_sleep_file <- function(f) {
   df <- read_garmin_fixed(f)
@@ -2213,6 +2311,21 @@ if (sleep_source_uses_api && exists("sensor_raw")) {
   }
 }
 
+# Garmin is the default source. SleepScoreBattle can optionally enrich the
+# Garmin row with custom metrics such as sleep latency, time in bed, and the
+# pre-sleep heart rate. Garmin remains authoritative for duplicate base fields.
+if (sleep_source_mode == "garmin" && sleep_scb_enabled) {
+  scb_df <- read_sleep_api(mapping, date_start = start_date, date_end = end_date)
+  sleep_df_raw <- merge_sleep_sources(
+    sleep_df_raw,
+    scb_df,
+    primary_label = "garmin",
+    secondary_label = "api",
+    priority = "csv",
+    skip_fields = character(0)
+  )
+}
+
 # In pure 'csv' mode, null out unreliable CSV fields (e.g. HRV) since there
 # is no API to supply the correct values.  The column will remain NA.
 if (sleep_source_mode == "csv" && length(csv_skip_fields) > 0) {
@@ -2304,7 +2417,10 @@ sleep_complete <- {
     mutate(across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final))
 }
 if (!"Sleep_Source" %in% names(sleep_complete)) {
-  sleep_complete$Sleep_Source <- ifelse(startsWith(as.character(sleep_complete$Source_File), "api://"), "api", "csv")
+  sleep_complete$Sleep_Source <- ifelse(
+    startsWith(as.character(sleep_complete$Source_File), "api://"), "api",
+    ifelse(startsWith(as.character(sleep_complete$Source_File), "garmin://"), "garmin", "csv")
+  )
 }
 
 # drop rows with missing critical sleep metrics immediately

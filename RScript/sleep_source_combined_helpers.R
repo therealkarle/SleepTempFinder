@@ -5,16 +5,18 @@
 
 normalize_sleep_source_mode <- function(mode) {
   mode <- tolower(trimws(as.character(mode %||% "csv")))
-  if (!mode %in% c("csv", "api", "combined")) {
-    stop(sprintf("Invalid sleep_source.mode '%s'; expected 'csv', 'api', or 'combined'.", mode))
+  if (mode == "sleepscorebattle") mode <- "api"
+  if (!mode %in% c("csv", "api", "garmin", "combined")) {
+    stop(sprintf("Invalid sleep_source.mode '%s'; expected 'csv', 'api', 'garmin', or 'combined'.", mode))
   }
   mode
 }
 
 normalize_sleep_source_priority <- function(priority) {
   priority <- tolower(trimws(as.character(priority %||% "csv")))
-  if (!priority %in% c("csv", "api")) {
-    stop(sprintf("Invalid sleep_source.priority '%s'; expected 'csv' or 'api'.", priority))
+  if (priority == "sleepscorebattle") priority <- "api"
+  if (!priority %in% c("csv", "api", "garmin")) {
+    stop(sprintf("Invalid sleep_source.priority '%s'; expected 'csv', 'api', or 'garmin'.", priority))
   }
   priority
 }
@@ -112,6 +114,36 @@ merge_sleep_source_rows <- function(csv_df, api_df, priority = "csv", skip_field
     }
   }
 
+  merged
+}
+
+merge_sleep_sources <- function(primary_df, secondary_df, primary_label = "csv",
+                                secondary_label = "api", priority = "csv",
+                                skip_fields = character(0)) {
+  priority <- normalize_sleep_source_priority(priority)
+  primary <- harmonize_sleep_source_types(prepare_sleep_source_rows(primary_df, primary_label, skip_fields = skip_fields))
+  secondary <- harmonize_sleep_source_types(prepare_sleep_source_rows(secondary_df, secondary_label, skip_fields = character(0)))
+  if (nrow(primary) == 0) return(secondary)
+  if (nrow(secondary) == 0) return(primary)
+
+  combined <- if (priority == "csv") dplyr::bind_rows(primary, secondary) else dplyr::bind_rows(secondary, primary)
+  merged <- combined |>
+    dplyr::arrange(Date) |>
+    dplyr::distinct(Date, .keep_all = TRUE)
+
+  fill_cols <- intersect(setdiff(names(secondary), c("Date", "Sleep_Source", "Source_File", "Source_Name")), names(merged))
+  fill_cols <- unique(c(fill_cols, intersect(skip_fields, names(merged))))
+  if (length(fill_cols) > 0) {
+    secondary_fill <- secondary[, c("Date", fill_cols), drop = FALSE]
+    names(secondary_fill)[names(secondary_fill) != "Date"] <- paste0(fill_cols, "_secondary_fill")
+    merged <- dplyr::left_join(merged, secondary_fill, by = "Date")
+    for (col in fill_cols) {
+      fill_col <- paste0(col, "_secondary_fill")
+      need_fill <- is.na(merged[[col]]) & !is.na(merged[[fill_col]])
+      merged[[col]][need_fill] <- merged[[fill_col]][need_fill]
+      merged[[fill_col]] <- NULL
+    }
+  }
   merged
 }
 

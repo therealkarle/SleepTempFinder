@@ -48,3 +48,7 @@ ChronometerUserData/
 RScript/sleep_source_compare_2026-04-05.csv
 RScript/sleep_source_compare*
 .posit/assistant
+
+# API caches and Garmin authentication tokens
+.cache/
+GarminConnectBridge/*.json

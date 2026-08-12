@@ -3,11 +3,34 @@
 # you can optionally override scan behavior
 #scan_recursive: true
 
+# Garmin Connect is the default source. Set GARMIN_EMAIL and optionally
+# GARMIN_PASSWORD in the environment; the wrapper stores refresh tokens in
+# GARMINTOKENS (or use sleep_source.garmin.token_store below).
+sleep_source:
+  mode: "garmin"
+  priority: "garmin"
+  garmin:
+    token_store: ""
+    cache_dir: "../.cache/garmin"
+    cache_ttl_seconds: 86400
+    metrics: []
+    lifestyle_logging:
+      enabled: false
+  sleepscorebattle:
+    enabled: false
+    metrics: []
+    base_url: ""
+    user_id: ""
+    user_email: ""
+    bearer_token: ""
+    cache_dir: "../.cache/sleepscorebattle"
+    cache_ttl_seconds: 86400
+
 # sleep_source:
 #   mode: "combined"   # csv, api, or combined
 #   priority: "csv"    # csv-first (default) or api-first fallback
 #   api:
-#     base_url: "https://sleepscoreprivate.onrender.com"
+#     base_url: ""
 #     user_id: ""
 #     user_email: ""
 #     bearer_token: ""

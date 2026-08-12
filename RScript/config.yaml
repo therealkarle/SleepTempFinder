@@ -233,6 +233,8 @@ analysis_metrics:
 # mode:
 #   csv      - use only CSV files found under data_directory
 #   api      - fetch all sleep data from the Sleep Score Private API
+#   sleepscorebattle - alias for api
+#   garmin   - fetch sleep data through python-garminconnect (default)
 #   combined - use both; priority determines which source wins for dates
 #              that appear in both.  Additionally, csv_skip_fields lets you
 #              pull specific metrics (e.g. HRV) from the API only.
@@ -259,9 +261,33 @@ analysis_metrics:
 #     priority: "api"
 #     csv_skip_fields: ["HRV"]
 #     api:
-#       base_url: "https://sleepscoreprivate.onrender.com"
+#       base_url: ""
 #       user_email: "you@example.com"
 #       bearer_token: "your-token"
+
+sleep_source:
+  mode: "garmin"
+  priority: "garmin"
+  csv_skip_fields: ["HRV"]
+  garmin:
+    cache_dir: "../.cache/garmin"
+    token_store: ""
+    cache_ttl_seconds: 86400
+    # Optional: hrv, respiration, spo2, stress, body_battery, heart_rate
+    metrics: []
+    lifestyle_logging:
+      enabled: false
+  sleepscorebattle:
+    enabled: false
+    # Empty loads all returned custom fields; otherwise use normalized names,
+    # e.g. sleep_latency, time_in_bed, pre_sleep_heart_rate.
+    metrics: []
+    base_url: ""
+    user_id: ""
+    user_email: ""
+    bearer_token: ""
+    cache_dir: "../.cache/sleepscorebattle"
+    cache_ttl_seconds: 86400
 
 # --- OUTLIER FILTER ---
 # mode: false/manual/value_interval
