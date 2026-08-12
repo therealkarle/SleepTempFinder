@@ -404,6 +404,12 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL) {
   if (!is.null(date_end) && !is.na(date_end)) {
     query_parts <- c(query_parts, paste0("to=", URLencode(format(as.Date(date_end), "%Y-%m-%d"), reserved = TRUE)))
   }
+  if (length(sleep_api_metrics) > 0) {
+    query_parts <- c(
+      query_parts,
+      paste0("metrics=", URLencode(paste(sleep_api_metrics, collapse = ","), reserved = TRUE))
+    )
+  }
   query_parts <- c(query_parts, "limit=1000", "offset=0")
   payload <- api_get_json("/api/v1/sleep/entries", query_parts)
 
@@ -500,11 +506,23 @@ read_garmin_bridge <- function(date_start, date_end) {
   rows <- normalize_sleep_api_rows(rows, mapping)
   if (length(sleep_api_metrics) > 0) {
     requested_norm <- normalize_api_name(sleep_api_metrics)
+    metric_patterns <- list(
+      pre_sleep_hr = "pre.?sleep|before.?sleep|bedtime.?hr|sleep.?hr|heart.?rate.?before|hr.?before",
+      sleep_respiration = "respirat|breath|atem|breathing",
+      time_in_bed = "time.?in.?bed|bed.?time|bett|in.?bed",
+      sleep_latency = "latency|fall.?asleep|einschlaf"
+    )
     required_keep <- c(
       "Date", "bedtime", "waketime", mapping$garmin_sleep_score,
       mapping$garmin_hrv, mapping$garmin_rhr, mapping$garmin_duration
     )
     selected_extra <- names(rows)[normalize_api_name(names(rows)) %in% requested_norm]
+    for (metric_name in intersect(names(metric_patterns), sleep_api_metrics)) {
+      selected_extra <- unique(c(
+        selected_extra,
+        names(rows)[grepl(metric_patterns[[metric_name]], names(rows), ignore.case = TRUE)]
+      ))
+    }
     rows <- rows[, unique(c(intersect(required_keep, names(rows)), selected_extra,
                             "Source_File", "Source_Name")), drop = FALSE]
   }
