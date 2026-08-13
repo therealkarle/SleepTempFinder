@@ -823,6 +823,10 @@ close_graphics_device <- function(device_id) {
   if (is.null(device_id) || is.na(device_id) || device_id <= 1L) {
     return(invisible(FALSE))
   }
+  current_devices <- grDevices::dev.list()
+  if (is.null(current_devices) || !(device_id %in% as.integer(current_devices))) {
+    return(invisible(FALSE))
+  }
   tryCatch({
     suppressWarnings(grDevices::dev.off(which = device_id))
     invisible(TRUE)
@@ -842,7 +846,7 @@ slugify_plot_name <- function(...) {
   tolower(plot_name)
 }
 
-save_plot_image <- function(plot_object, file_stub, width = 10, height = 6, dpi = 300) {
+save_plot_image <- function(plot_object, file_stub, width = 10, height = 6, dpi = 450) {
   if (dry_run || !plot_export_enabled) return(invisible(NULL))
   dir.create(plot_output_dir, recursive = TRUE, showWarnings = FALSE)
   file_path <- file.path(plot_output_dir, paste0(file_stub, ".png"))
@@ -1693,7 +1697,7 @@ value_outlier_scope <- function(metric) {
 filter_outlier_rows_for_metric <- function(df, metric) {
   if (is.null(df) || nrow(df) == 0) return(df)
   if (!"Self_Outlier_Columns" %in% names(df) || !"Value_Outlier_Columns" %in% names(df)) return(df)
-  df %>% filter(!(
+  df %>% dplyr::filter(!(
     map_lgl(Self_Outlier_Columns, function(cols) metric %in% cols) |
     map_lgl(Value_Outlier_Columns, function(cols) {
       any(vapply(cols, function(value_metric) metric %in% value_outlier_scope(value_metric), logical(1)))
@@ -3034,6 +3038,11 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
   # Matrix Dashboard - ensure each row is one bio metric and each column is one environment metric
   num_cols <- max(1, length(env_analysis_vars))
   num_rows <- max(1, length(bio_vars))
+  # Keep every matrix cell readable when many metrics are selected.  The
+  # dashboard is exported as a page whose size grows with the number of rows;
+  # explicit row heights also prevent gridExtra from compressing the plots.
+  matrix_cell_width <- 4.5
+  matrix_cell_height <- if (num_rows > 6) 3.75 else 3.25
   matrix_plots <- vector("list", num_rows * num_cols)
   plot_index <- 1
 
@@ -3078,25 +3087,57 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
   if(length(matrix_plots) > 0) {
     tryCatch({
       gc()
-      matrix_dashboard <- gridExtra::arrangeGrob(
-        grobs = matrix_plots,
-        ncol = num_cols,
-        top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2, fontfamily = ""))
-      )
-      drop_plot_objects("matrix_plots", env = environment())
-      gc(FALSE)
-      save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
-      if (!dry_run) {
-        tryCatch({
-          suppressWarnings(grid::grid.newpage())
-          suppressWarnings(grid::grid.draw(matrix_dashboard))
-          if (interactive()) try(graphics::dev.flush(), silent = TRUE)
-        }, error = function(e) {
-          warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
-          cat("Matrix dashboard saved to file but could not be rendered on screen.\n")
-        })
+      max_page_rows <- 3L
+      max_page_cols <- 4L
+      row_groups <- split(seq_len(num_rows), ceiling(seq_len(num_rows) / max_page_rows))
+      col_groups <- split(seq_len(num_cols), ceiling(seq_len(num_cols) / max_page_cols))
+      page_count <- length(row_groups) * length(col_groups)
+      page_number <- 1L
+
+      for (row_indices in row_groups) {
+        for (col_indices in col_groups) {
+          page_plot_indices <- unlist(lapply(row_indices, function(row_index) {
+            (row_index - 1L) * num_cols + col_indices
+          }), use.names = FALSE)
+          page_plots <- matrix_plots[page_plot_indices]
+          page_rows <- length(row_indices)
+          page_cols <- length(col_indices)
+          page_label <- sprintf("%02d", page_number)
+
+          matrix_dashboard <- gridExtra::arrangeGrob(
+            grobs = page_plots,
+            ncol = page_cols,
+            widths = rep(matrix_cell_width, page_cols),
+            heights = rep(matrix_cell_height, page_rows),
+            top = textGrob(
+              sprintf("Environmental Impact Matrix (with Optima) - Part %s/%02d", page_label, page_count),
+              gp = gpar(fontsize = 12, font = 2, fontfamily = "")
+            )
+          )
+
+          save_plot_image(
+            matrix_dashboard,
+            slugify_plot_name("impact", "matrix", "part", page_label),
+            width = matrix_cell_width * page_cols,
+            height = matrix_cell_height * page_rows + 0.5
+          )
+          if (!dry_run) {
+            tryCatch({
+              suppressWarnings(grid::grid.newpage())
+              suppressWarnings(grid::grid.draw(matrix_dashboard))
+              if (interactive()) try(graphics::dev.flush(), silent = TRUE)
+            }, error = function(e) {
+              warning(sprintf("Failed to render matrix dashboard part %s: %s\n", page_label, conditionMessage(e)))
+              cat(sprintf("Matrix dashboard part %s/%02d was saved but could not be rendered on screen.\n", page_label, page_count))
+            })
+          }
+          drop_plot_objects("matrix_dashboard", "page_plots", env = environment())
+          page_number <- page_number + 1L
+          gc(FALSE)
+        }
       }
-      drop_plot_objects("matrix_dashboard", env = environment())
+
+      drop_plot_objects("matrix_plots", env = environment())
       gc(FALSE)
     }, error = function(e) {
       warning(sprintf("Failed to arrange matrix plots: %s\n", conditionMessage(e)))
@@ -3127,7 +3168,14 @@ run_plot_pass <- function(mode, dashboard_df, analysis_df, env_analysis_vars, me
     options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
     tryCatch(
       {
-        invisible(capture.output(httpgd::hgd()))
+        # Use a large canvas for the browser/httpgd output.  Otherwise the
+        # complete matrix is rasterized into the small default plot pane.
+        browser_plot_width <- max(1600, 450 * length(env_analysis_vars))
+        browser_plot_height <- max(1200, 300 * length(bio_vars))
+        invisible(capture.output(httpgd::hgd(
+          width = browser_plot_width,
+          height = browser_plot_height
+        )))
         opened_device_id <- tryCatch(grDevices::dev.cur(), error = function(e) NULL)
       },
       error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n")
