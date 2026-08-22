@@ -3043,11 +3043,21 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
   # explicit row heights also prevent gridExtra from compressing the plots.
   matrix_cell_width <- 4.5
   matrix_cell_height <- if (num_rows > 6) 3.75 else 3.25
+  matrix_theme <- theme_minimal(base_size = 8, base_family = "") +
+    theme(
+      text = element_text(family = ""),
+      plot.title = element_text(size = 7, face = "bold", family = ""),
+      axis.title = element_text(size = 8, family = ""),
+      axis.text = element_text(size = 7, family = "")
+    )
   matrix_plots <- vector("list", num_rows * num_cols)
   plot_index <- 1
 
   for(m in bio_vars) {
     m_color <- metric_colors[match(m, metric_list)]
+    if (length(m_color) == 0L || is.na(m_color) || !nzchar(m_color)) {
+      m_color <- "black"
+    }
     for(env_name in names(env_analysis_vars)) {
       e_col <- env_analysis_vars[[env_name]]$col
       e_unit <- env_analysis_vars[[env_name]]$unit
@@ -3058,12 +3068,9 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
           filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
         p_mat <- ggplot(sub_mat, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
-          theme_minimal(base_size = 8, base_family = "") +
+          matrix_theme +
           labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
-          theme(
-            text = element_text(family = ""),
-            plot.title = element_text(size = 7, face = "bold", family = "")
-          )
+          theme(plot.title = element_text(color = m_color))
 
         if(!is.null(opt)) {
           p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
