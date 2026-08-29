@@ -5,6 +5,8 @@ data_directory: "../data"
 
 verbose: false
 
+
+
 # --- PARSING SETTINGS ---
 # lists of orders passed to lubridate::parse_date_time
 parse_orders:
@@ -47,6 +49,23 @@ column_names:
   garmin_hrv_alt: "Ø HFV über Nacht"
   garmin_rhr: "Ruheherzfrequenz"
   garmin_duration: "Dauer"
+  garmin_deep_sleep_percentage:
+    - "Deep Sleep %"
+    - "Deep Sleep Percentage"
+    - "Tiefschlaf %"
+  garmin_rem_percentage:
+    - "REM %"
+    - "REM Percentage"
+  garmin_stress:
+    - "Stress"
+    - "Ø Stress"
+  garmin_wake_time:
+    - "Wachzeit"
+    - "Wake Time"
+    - "Awake Time"
+  garmin_restless_moments:
+    - "Unruhige Momente"
+    - "Restless Moments"
   garmin_spo2: "Pulsoximeter"
   garmin_skin_temp: "Veränderung der Hauttemperatur"
   garmin_resp: "Atmung"
@@ -217,11 +236,88 @@ analysis_metrics:
     HRV: true
     RHR: true
     Sleep_Duration: true
+    Deep_Sleep_Percentage: true
+    REM_Percentage: true
+    Stress: true
+    Wake_Time: false
+    Restless_Moments: true
   # compatibility: optionally provide a list of metric names instead
   # metrics:
   #   - Avg_Temp
   #   - Sleep_Score
   #   - HRV
+
+# --- SLEEP SOURCE ---
+# Sleep input can come from the legacy CSV scan, the Sleep Score Private API,
+# or a combination of both.  Configure this section (or override it in
+# config.private.yaml) to control where sleep data comes from.
+#
+# mode:
+#   csv      - use only CSV files found under data_directory
+#   api      - fetch all sleep data from the Sleep Score Private API
+#   sleepscorebattle - alias for api
+#   garmin   - fetch sleep data through python-garminconnect (default)
+#   combined - use both; priority determines which source wins for dates
+#              that appear in both.  Additionally, csv_skip_fields lets you
+#              pull specific metrics (e.g. HRV) from the API only.
+#
+# priority (combined mode only): "csv" or "api"
+#   When both sources have a row for the same date, the priority source is
+#   kept after deduplication.  csv_skip_fields are ALWAYS filled from the
+#   API even when priority is "csv".
+#
+# csv_skip_fields:
+#   List of metric column names that should be nulled out when loading from
+#   CSV and instead sourced from the API.  This is useful because the Garmin
+#   CSV export has historically produced unreliable HRV (HFV) values.  When
+#   this list is non-empty and mode is "combined", the API is queried for
+#   ALL sensor nights (not just gaps) so the skipped fields can be filled in.
+#   In pure "csv" mode the listed fields are still nulled out, which means
+#   they will be NA (no API data to fill them).
+#   Default behaviour: if HRV is enabled in analysis_metrics, HRV is added
+#   automatically.  Set this to [] to disable.
+#
+# Example (place in config.private.yaml):
+#   sleep_source:
+#     mode: "combined"
+#     priority: "api"
+#     csv_skip_fields: ["HRV"]
+#     api:
+#       base_url: ""
+#       user_email: "you@example.com"
+#       bearer_token: "your-token"
+
+sleep_source:
+  mode: "garmin"
+  priority: "garmin"
+  csv_skip_fields: ["HRV"]
+  query:
+    # Optional API query window. Empty dates default to the last 30 days.
+    days: 30
+    date_start: ""
+    date_end: ""
+  garmin:
+    cache_dir: "../Cache/garmin"
+    token_store: ""
+    cache_ttl_seconds: 86400
+    # Extra Garmin endpoint metrics. Sleep stress is also read directly from
+    # the sleep response; this adds the daily stress endpoint as a fallback.
+    metrics: [stress]
+    lifestyle_logging:
+      enabled: true
+      output_dir: "../Cache/garmin/lifestyle_logging"
+  sleepscorebattle:
+    enabled: true
+    # Empty means: load every custom field returned by SleepScoreBattle,
+    # including both pre-sleep HR fields, sleep-breathing metrics, and all
+    # time-in-bed metrics.
+    metrics: []
+    base_url: ""
+    user_id: ""
+    user_email: ""
+    bearer_token: ""
+    cache_dir: "../Cache/sleepscorebattle"
+    cache_ttl_seconds: 86400
 
 # --- OUTLIER FILTER ---
 # mode: false/manual/value_interval

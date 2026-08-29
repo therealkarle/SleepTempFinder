@@ -19,7 +19,7 @@ if (!require("rstudioapi")) install.packages("rstudioapi")
 if (is.null(getOption("repos")) || getOption("repos")[[1]] == "@CRAN@") {
   options(repos = c(CRAN = "https://cloud.r-project.org"))
 }
-pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales", "future", "furrr")
+pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales", "future", "furrr", "jsonlite")
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) install.packages(pkg, dependencies = TRUE)
   library(pkg, character.only = TRUE)
@@ -151,6 +151,7 @@ script_directory <- if (!is.null(script_path)) dirname(script_path) else normali
 
 # Load flag expression parser for complex boolean flag expressions
 source(file.path(script_directory, "flag_expression_parser.R"), local = FALSE)
+source(file.path(script_directory, "sleep_source_combined_helpers.R"), local = FALSE)
 
 # load configuration (primary + optional private override)
 config <- read_yaml("config.yaml")
@@ -170,6 +171,472 @@ if (file.exists(private_cfg_path)) {
 if (is.null(config$sensor_files) && !is.null(config$temp_files)) {
   config$sensor_files <- config$temp_files
   cat("Config warning: 'temp_files' renamed to 'sensor_files' for clarity\n")
+}
+
+# Sleep input can come from legacy CSV, SleepScoreBattle, or Garmin Connect.
+sleep_source_cfg <- config$sleep_source %||% list()
+sleep_source_mode <- normalize_sleep_source_mode(sleep_source_cfg$mode %||% "garmin")
+sleep_source_priority <- normalize_sleep_source_priority(sleep_source_cfg$priority %||% "csv")
+sleep_source_uses_csv <- sleep_source_mode %in% c("csv", "combined")
+sleep_source_uses_api <- sleep_source_mode %in% c("api", "combined")
+sleep_source_uses_garmin <- sleep_source_mode %in% c("garmin")
+sleep_api_cfg <- sleep_source_cfg$sleepscorebattle %||% sleep_source_cfg$api %||% list()
+sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% ""))
+if (nzchar(sleep_api_base_url)) {
+  sleep_api_base_url <- sub("/+$", "", sleep_api_base_url)
+}
+sleep_api_user_id <- trimws(as.character(sleep_api_cfg$user_id %||% ""))
+sleep_api_user_email <- trimws(as.character(sleep_api_cfg$user_email %||% ""))
+sleep_api_bearer_token <- trimws(as.character(sleep_api_cfg$bearer_token %||% Sys.getenv("API_INTERNAL_SECRET", unset = "")))
+sleep_api_cache_dir <- path.expand(as.character(sleep_api_cfg$cache_dir %||% file.path(script_directory, "..", "Cache", "sleepscorebattle")))
+sleep_api_cache_ttl <- as.numeric(sleep_api_cfg$cache_ttl_seconds %||% 86400)
+sleep_api_metrics <- trimws(unlist(sleep_api_cfg$metrics %||% character(0)))
+
+garmin_cfg <- sleep_source_cfg$garmin %||% list()
+garmin_bridge_path <- file.path(script_directory, "..", "GarminConnectBridge", "garmin_bridge.py")
+garmin_cache_dir <- path.expand(as.character(garmin_cfg$cache_dir %||% file.path(script_directory, "..", "Cache", "garmin")))
+garmin_token_store <- path.expand(as.character(garmin_cfg$token_store %||% Sys.getenv("GARMINTOKENS", unset = "")))
+garmin_cache_ttl <- as.integer(garmin_cfg$cache_ttl_seconds %||% 86400)
+garmin_metrics <- trimws(unlist(garmin_cfg$metrics %||% character(0)))
+if (isTRUE(garmin_cfg$lifestyle_logging$enabled)) {
+  garmin_metrics <- unique(c(garmin_metrics, "lifestyle_logging"))
+}
+garmin_lifestyle_output_dir <- path.expand(as.character(
+  garmin_cfg$lifestyle_logging$output_dir %||% file.path(garmin_cache_dir, "lifestyle_logging")
+))
+garmin_metrics <- garmin_metrics[nzchar(garmin_metrics)]
+sleep_scb_enabled <- isTRUE(sleep_source_cfg$sleepscorebattle$enabled %||% FALSE)
+
+normalize_api_name <- function(x) {
+  gsub("[^a-z0-9]+", "", tolower(as.character(x)))
+}
+
+find_first_api_column <- function(hdr, candidates) {
+  if (length(hdr) == 0 || length(candidates) == 0) return(NA_character_)
+  # Prefer an exact spelling before normalized matching. In particular,
+  # `waketime` (end of sleep) and `Wake_Time` (awake duration) normalize to
+  # the same value but must remain distinct fields.
+  exact <- candidates[candidates %in% hdr]
+  if (length(exact) > 0) return(exact[[1]])
+  idx <- match(normalize_api_name(candidates), normalize_api_name(hdr))
+  idx <- idx[!is.na(idx)]
+  if (length(idx) == 0) return(NA_character_)
+  hdr[[idx[[1]]]]
+}
+
+rename_api_column <- function(df, target_name, candidates) {
+  if (is.null(target_name) || !nzchar(target_name)) return(df)
+  old_name <- find_first_api_column(names(df), candidates)
+  if (!is.na(old_name) && old_name != target_name) {
+    # A Garmin response can contain both the canonical column and one of its
+    # aliases (for example HRV and avgOvernightHrv). Renaming the alias in
+    # that case creates duplicate names and makes dplyr::mutate() fail.
+    if (target_name %in% names(df)) {
+      target_values <- df[[target_name]]
+      source_values <- df[[old_name]]
+      missing_target <- is.na(target_values)
+      if (any(missing_target)) {
+        target_values[missing_target] <- source_values[missing_target]
+        df[[target_name]] <- target_values
+      }
+      df[[old_name]] <- NULL
+    } else {
+      names(df)[names(df) == old_name] <- target_name
+    }
+  }
+  df
+}
+
+extract_api_rows <- function(payload) {
+  if (is.data.frame(payload)) {
+    return(as_tibble(payload, .name_repair = "unique"))
+  }
+  if (is.list(payload)) {
+    for (nm in c("entries", "data", "items", "rows", "sleep_entries")) {
+      candidate <- payload[[nm]]
+      if (is.data.frame(candidate)) {
+        return(as_tibble(candidate, .name_repair = "unique"))
+      }
+      if (is.list(candidate) && length(candidate) > 0) {
+        candidate_df <- tryCatch(bind_rows(candidate), error = function(e) NULL)
+        if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
+          return(as_tibble(candidate_df, .name_repair = "unique"))
+        }
+      }
+    }
+    if (!is.null(payload$days) && is.list(payload$days)) {
+      day_entries <- map(payload$days, "entries")
+      day_entries <- day_entries[!vapply(day_entries, is.null, logical(1))]
+      if (length(day_entries) > 0) {
+        candidate_df <- tryCatch(bind_rows(day_entries), error = function(e) NULL)
+        if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
+          return(as_tibble(candidate_df, .name_repair = "unique"))
+        }
+      }
+    }
+    candidate_df <- tryCatch(bind_rows(payload), error = function(e) NULL)
+    if (!is.null(candidate_df) && nrow(candidate_df) > 0) {
+      return(as_tibble(candidate_df, .name_repair = "unique"))
+    }
+  }
+  tibble()
+}
+
+normalize_sleep_api_rows <- function(df, mapping) {
+  df <- as_tibble(df, .name_repair = "unique")
+  df <- rename_api_column(df, "Date", c(
+    "Date", "date", "sleep_date", "sleepDate", "view_date", "viewDate",
+    "night_date", "nightDate", "day", "sleepDay"
+  ))
+  df <- rename_api_column(df, "bedtime", c(
+    "bedtime", "bed_time", "sleep_start", "sleepStart", "start_time",
+    "startTime", "start", "asleep_time", "sleep_begin", "sleepBegin",
+    "sleep_start_time", "sleepStartTime", "sleep_start_time_local", "sleepStartTimeLocal"
+  ))
+  df <- rename_api_column(df, "waketime", c(
+    "waketime", "wake_time", "wakeTime", "sleep_end", "sleepEnd",
+    "end_time", "endTime", "end", "wake_up_time", "wakeUpTime",
+    "sleep_end_time", "sleepEndTime", "sleep_end_time_local", "sleepEndTimeLocal"
+  ))
+  df <- rename_api_column(df, mapping$garmin_sleep_score, c(
+    "Sleep_Score", "sleep_score", "sleepScore", "score", "sleepscore"
+  ))
+  df <- rename_api_column(df, mapping$garmin_hrv, c(
+    "HRV", "hrv", "hrv_status", "hrvStatus", "overnight_hrv", "overnightHrv",
+    "hrv_score", "avg_overnight_hrv", "avgOvernightHrv"
+  ))
+  if (!is.null(mapping$garmin_hrv_alt)) {
+    df <- rename_api_column(df, mapping$garmin_hrv_alt, c(
+      "hrv_alt", "hrvAlt", "overnight_hrv_alt", "overnightHrvAlt", "avg_hrv", "avgHrv",
+      "avg_overnight_hrv", "avgOvernightHrv"
+    ))
+  }
+  df <- rename_api_column(df, mapping$garmin_rhr, c(
+    "RHR", "rhr", "resting_heart_rate", "restingHeartRate", "resting_hr"
+  ))
+  df <- rename_api_column(df, "Deep_Sleep_Seconds", c(
+    "Deep_Sleep_Seconds", "deepSleepSeconds", "deep_sleep_seconds", "deepSleepTimeSeconds",
+    "deepSleepTime", "deep_sleep_time"
+  ))
+  df <- rename_api_column(df, "Deep_Sleep_Percentage", c(
+    "Deep_Sleep_Percentage", "deepSleepPercentage", "deepSleepPercent", "deep_sleep_percentage"
+  ))
+  df <- rename_api_column(df, "REM_Seconds", c(
+    "REM_Seconds", "remSleepSeconds", "rem_sleep_seconds", "remSleepTimeSeconds",
+    "remSleepTime", "rem_sleep_time"
+  ))
+  df <- rename_api_column(df, "REM_Percentage", c(
+    "REM_Percentage", "remSleepPercentage", "remSleepPercent", "rem_sleep_percentage"
+  ))
+  df <- rename_api_column(df, "Wake_Time", c(
+    "Wake_Time", "awakeSleepSeconds", "awake_sleep_seconds", "awakeTimeSeconds",
+    "awakeTime", "wakeTimeSeconds", "Wachzeit"
+  ))
+  df <- rename_api_column(df, "Restless_Moments", c(
+    "Restless_Moments", "restlessMomentsCount", "restless_moments", "restlessMoments",
+    "Unruhige Momente"
+  ))
+  df <- rename_api_column(df, "Stress", c(
+    "Stress", "Garmin_stress", "averageStressLevel", "avgStressLevel", "stress", "stressLevel"
+  ))
+  duration_col <- find_first_api_column(names(df), c(
+    "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength",
+    "total_sleep_duration_minutes", "totalSleepDurationMinutes", "sleep_duration_minutes", "sleepDurationMinutes"
+  ))
+  if (!is.na(duration_col) && !is.null(mapping$garmin_duration)) {
+    if (duration_col == "total_sleep_duration_minutes" || duration_col == "totalSleepDurationMinutes" ||
+        duration_col == "sleep_duration_minutes" || duration_col == "sleepDurationMinutes") {
+      df[[mapping$garmin_duration]] <- suppressWarnings(as.numeric(df[[duration_col]]) / 60)
+      if (duration_col != mapping$garmin_duration) {
+        df[[duration_col]] <- NULL
+      }
+    } else {
+      df <- rename_api_column(df, mapping$garmin_duration, c(
+        "Sleep_Duration", "sleep_duration", "sleepDuration", "duration", "sleep_length", "sleepLength"
+      ))
+    }
+  }
+  if ("Date" %in% names(df)) {
+    df$Date <- as.Date(df$Date)
+  }
+  df
+}
+
+read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL,
+                           enrichment_only = FALSE) {
+  if (!nzchar(sleep_api_base_url)) {
+    stop("sleep_source.sleepscorebattle.base_url (or sleep_source.api.base_url) is required in config.private.yaml.")
+  }
+  if (!nzchar(sleep_api_bearer_token)) {
+    stop("sleep_source.api.bearer_token is required in config.private.yaml (or set API_INTERNAL_SECRET).")
+  }
+  if (!nzchar(sleep_api_user_id) && !nzchar(sleep_api_user_email)) {
+    stop("sleep_source.api.user_id or sleep_source.api.user_email is required.")
+  }
+
+  # Render free-tier cold starts can take longer than the default 60s read timeout.
+  old_timeout <- getOption("timeout")
+  on.exit(options(timeout = old_timeout), add = TRUE)
+  options(timeout = max(old_timeout, 300))
+
+  api_get_json <- function(path, query_parts = character(0)) {
+    dir.create(sleep_api_cache_dir, recursive = TRUE, showWarnings = FALSE)
+    cache_id <- paste(c(path, query_parts), collapse = "__")
+    cache_key_file <- tempfile("sleepscorebattle-cache-key-")
+    writeLines(cache_id, cache_key_file, useBytes = TRUE)
+    cache_hash <- unname(tools::md5sum(cache_key_file))
+    unlink(cache_key_file)
+    endpoint_name <- gsub("[^A-Za-z0-9_.-]", "_", basename(path))
+    cache_path <- file.path(sleep_api_cache_dir, paste0(endpoint_name, "-", cache_hash, ".json"))
+    cached_payload <- NULL
+    if (file.exists(cache_path)) {
+      cache_age <- as.numeric(difftime(Sys.time(), file.info(cache_path)$mtime, units = "secs"))
+      cached_payload <- tryCatch(jsonlite::fromJSON(cache_path, simplifyVector = FALSE)$payload, error = function(e) NULL)
+      if (!is.null(cached_payload) && is.finite(cache_age) && cache_age <= sleep_api_cache_ttl) {
+        return(cached_payload)
+      }
+    }
+    request_url <- paste0(
+      sleep_api_base_url, path,
+      if (length(query_parts) > 0) paste0("?", paste(query_parts, collapse = "&")) else ""
+    )
+    con <- url(
+      request_url,
+      open = "rb",
+      headers = c(
+        Authorization = paste0("Bearer ", sleep_api_bearer_token),
+        Accept = "application/json"
+      )
+    )
+    on.exit(try(close(con), silent = TRUE), add = TRUE)
+    raw_text <- tryCatch(
+      readLines(con, warn = FALSE, encoding = "UTF-8"),
+      error = function(e) {
+        msg <- conditionMessage(e)
+        if (!is.null(cached_payload) && !grepl("401|403|unauthoriz|forbidden", tolower(msg))) {
+          warning("Using stale SleepScoreBattle cache for ", path)
+          return(cached_payload)
+        }
+        stop("Failed to read Sleep API response: ", msg)
+      }
+    )
+    if (!is.character(raw_text)) return(raw_text)
+    payload <- tryCatch(
+      jsonlite::fromJSON(paste(raw_text, collapse = "\n"), flatten = TRUE),
+      error = function(e) stop("Failed to parse Sleep API JSON: ", conditionMessage(e))
+    )
+    tryCatch(
+      jsonlite::write_json(
+        list(source = "sleepscorebattle", endpoint = path,
+             fetched_at = format(Sys.time(), tz = "UTC"), payload = payload),
+        cache_path, auto_unbox = TRUE, pretty = FALSE
+      ),
+      error = function(e) warning("Could not write SleepScoreBattle cache: ", conditionMessage(e))
+    )
+    payload
+  }
+
+  user_id <- sleep_api_user_id
+  if (!nzchar(user_id)) {
+    lookup_payload <- api_get_json(
+      "/api/v1/users/lookup",
+      paste0("query=", URLencode(sleep_api_user_email, reserved = TRUE))
+    )
+    user_id <- as.character(
+      lookup_payload$id %||% lookup_payload$user_id %||% lookup_payload$userId %||% ""
+    )
+    if (!nzchar(user_id)) {
+      stop("Sleep API user lookup returned no user id for: ", sleep_api_user_email)
+    }
+  }
+
+  query_parts <- c(paste0("user_id=", URLencode(user_id, reserved = TRUE)))
+  if (!is.null(date_start) && !is.na(date_start)) {
+    query_parts <- c(query_parts, paste0("from=", URLencode(format(as.Date(date_start), "%Y-%m-%d"), reserved = TRUE)))
+  }
+  if (!is.null(date_end) && !is.na(date_end)) {
+    query_parts <- c(query_parts, paste0("to=", URLencode(format(as.Date(date_end), "%Y-%m-%d"), reserved = TRUE)))
+  }
+  if (length(sleep_api_metrics) > 0) {
+    query_parts <- c(
+      query_parts,
+      paste0("metrics=", URLencode(paste(sleep_api_metrics, collapse = ","), reserved = TRUE))
+    )
+  }
+  query_parts <- c(query_parts, "limit=1000", "offset=0")
+  payload <- api_get_json("/api/v1/sleep/entries", query_parts)
+
+  rows <- extract_api_rows(payload)
+  if (nrow(rows) == 0) {
+    stop("Sleep API returned no export rows.")
+  }
+
+  rows <- normalize_sleep_api_rows(rows, mapping)
+  required_cols <- if (isTRUE(enrichment_only)) {
+    "Date"
+  } else {
+    c(
+      "Date",
+      "bedtime",
+      "waketime",
+      mapping$garmin_sleep_score,
+      mapping$garmin_rhr
+    )
+  }
+  missing_cols <- setdiff(required_cols, names(rows))
+  if (length(missing_cols) > 0) {
+    stop("Sleep API export is missing required column(s): ", paste(missing_cols, collapse = ", "))
+  }
+
+  if (isTRUE(enrichment_only)) {
+    rows <- rows %>% mutate(Date = as.Date(Date))
+  } else {
+    rows <- rows %>%
+      mutate(
+        Date = as.Date(Date),
+        bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
+        waketime = parse_datetime_safe(waketime, type = "garmin_time")
+      ) %>%
+    mutate(
+      waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
+      bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date))
+    ) %>%
+    mutate(
+      .bedtime_orig = bedtime,
+      .waketime_orig = waketime,
+      .swap_flag = (!is.na(.bedtime_orig) & !is.na(.waketime_orig) &
+        (hour(.bedtime_orig) <= 12 & hour(.waketime_orig) > 12 & .bedtime_orig < .waketime_orig))
+    ) %>%
+    mutate(
+      bedtime = if_else(.swap_flag, .waketime_orig, .bedtime_orig),
+      waketime = if_else(.swap_flag, .bedtime_orig, .waketime_orig)
+    ) %>%
+    mutate(
+      .missing_window = is.na(bedtime) & is.na(waketime),
+      bedtime = if_else(.missing_window, as.POSIXct(Date) - hours(12), bedtime),
+      waketime = if_else(.missing_window, as.POSIXct(Date) + hours(12), waketime)
+    ) %>%
+    mutate(bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)) %>%
+      select(-.bedtime_orig, -.waketime_orig, -.swap_flag, -.missing_window)
+  }
+
+  source_label <- if (nzchar(sleep_api_user_id)) {
+    paste0("api://user_id=", sleep_api_user_id)
+  } else {
+    paste0("api://user_email=", sleep_api_user_email)
+  }
+
+  rows %>%
+    mutate(
+      Source_File = source_label,
+      Source_Name = "Sleep Score Private API"
+    )
+}
+
+read_garmin_bridge <- function(date_start, date_end) {
+  if (!file.exists(garmin_bridge_path)) {
+    stop("Garmin bridge not found: ", garmin_bridge_path)
+  }
+  if (nzchar(garmin_token_store)) Sys.setenv(GARMINTOKENS = garmin_token_store)
+  python_bin <- Sys.getenv("PYTHON", unset = "python")
+  metric_arg <- paste(garmin_metrics, collapse = ",")
+  args <- c(
+    garmin_bridge_path,
+    "--start", format(as.Date(date_start), "%Y-%m-%d"),
+    "--end", format(as.Date(date_end), "%Y-%m-%d"),
+    "--cache-dir", garmin_cache_dir,
+    "--ttl", as.character(garmin_cache_ttl),
+    "--metrics", metric_arg,
+    "--lifestyle-output-dir", garmin_lifestyle_output_dir,
+    "--output", tempfile("garmin-result-", fileext = ".json")
+  )
+  output_index <- match("--output", args) + 1L
+  bridge_output <- args[[output_index]]
+  on.exit(unlink(bridge_output), add = TRUE)
+  bridge_stderr <- tempfile("garmin-bridge-", fileext = ".log")
+  on.exit(unlink(bridge_stderr), add = TRUE)
+  output <- system2(python_bin, args = args, stdout = TRUE, stderr = bridge_stderr)
+  bridge_messages <- if (file.exists(bridge_stderr)) {
+    readLines(bridge_stderr, warn = FALSE, encoding = "UTF-8")
+  } else {
+    character(0)
+  }
+  if (length(bridge_messages) > 0) {
+    cat(paste(bridge_messages, collapse = "\n"), "\n")
+  }
+  status <- attr(output, "status") %||% 0L
+  if (!identical(as.integer(status), 0L)) {
+    stop("Garmin bridge failed:\n", paste(c(bridge_messages, output), collapse = "\n"))
+  }
+  json_lines <- readLines(bridge_output, warn = FALSE, encoding = "UTF-8")
+  payload <- tryCatch(
+    jsonlite::fromJSON(paste(json_lines, collapse = "\n"), flatten = TRUE),
+    error = function(e) stop("Failed to parse Garmin bridge response: ", conditionMessage(e))
+  )
+  rows <- as_tibble(payload, .name_repair = "unique")
+  if (nrow(rows) == 0) stop("Garmin Connect returned no sleep rows.")
+  rows <- normalize_sleep_api_rows(rows, mapping)
+  # Keep the bridge contract canonical even when an older bridge/cache used
+  # one of Garmin's raw wake-time field names.
+  if (!"waketime" %in% names(rows)) {
+    wake_alias <- find_first_api_column(names(rows), c(
+      "wakeTime", "wake_time", "sleepEnd", "sleepEndTimeLocal",
+      "sleepEndTimestampLocal", "waketime"
+    ))
+    if (!is.na(wake_alias)) names(rows)[names(rows) == wake_alias] <- "waketime"
+  }
+  # Garmin returns an empty/partial row for days without a scored sleep
+  # record. Keep those rows so the date range remains traceable; downstream
+  # filtering will exclude rows without a usable sleep window.
+  required_cols <- c("Date", "bedtime", "waketime")
+  for (column in setdiff(required_cols, names(rows))) {
+    rows[[column]] <- if (column == "Date") as.Date(NA) else as.POSIXct(NA)
+  }
+  optional_metrics <- c(
+    "Sleep_Score", "HRV", "RHR", "Sleep_Duration", "Deep_Sleep_Percentage",
+    "REM_Percentage", "Stress", "Wake_Time", "Restless_Moments"
+  )
+  for (metric in optional_metrics) {
+    if (!metric %in% names(rows)) rows[[metric]] <- NA_real_
+  }
+  # normalize_sleep_api_rows also supports the legacy CSV mapping and may
+  # therefore leave the real Garmin value under a configured header such as
+  # "Score" while the canonical column above is only the NA placeholder.
+  # Promote those values before the analysis-facing rename step.
+  bridge_aliases <- c(
+    Sleep_Score = mapping$garmin_sleep_score,
+    HRV = mapping$garmin_hrv,
+    RHR = mapping$garmin_rhr,
+    Sleep_Duration = mapping$garmin_duration
+  )
+  for (canonical in names(bridge_aliases)) {
+    alias <- bridge_aliases[[canonical]]
+    if (!is.null(alias) && nzchar(alias) && alias %in% names(rows) && canonical %in% names(rows)) {
+      canonical_values <- rows[[canonical]]
+      alias_values <- rows[[alias]]
+      missing_canonical <- is.na(canonical_values)
+      canonical_values[missing_canonical] <- alias_values[missing_canonical]
+      rows[[canonical]] <- canonical_values
+      if (alias != canonical) rows[[alias]] <- NULL
+    }
+  }
+  rows <- rows %>%
+    mutate(
+      Date = as.Date(Date),
+      bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
+      waketime = parse_datetime_safe(waketime, type = "garmin_time")
+    ) %>%
+    mutate(
+      waketime = update(waketime, year = year(Date), month = month(Date), mday = day(Date)),
+      bedtime = update(bedtime, year = year(Date), month = month(Date), mday = day(Date)),
+      bedtime = if_else(bedtime > waketime, bedtime - days(1), bedtime)
+    ) %>%
+    mutate(
+      Source_File = paste0("garmin://", format(as.Date(date_start), "%Y-%m-%d"), "_", format(as.Date(date_end), "%Y-%m-%d")),
+      Source_Name = "Garmin Connect API",
+      Sleep_Source = "garmin"
+    )
+  rows
 }
 
 # determine the default sensor from sensor_files.default = true, falling back
@@ -203,7 +670,8 @@ matching_padding_minutes <- if (!is.null(config$matching_padding_minutes)) as.in
 default_analysis_metrics <- c(
   "Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD",
   "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR",
-  "Sleep_Duration"
+  "Sleep_Duration", "Deep_Sleep_Percentage", "REM_Percentage", "Stress",
+  "Wake_Time", "Restless_Moments"
 )
 
 normalize_analysis_metrics <- function(cfg) {
@@ -246,7 +714,24 @@ normalize_analysis_metrics <- function(cfg) {
   default_analysis_metrics
 }
 
+verbose <- isTRUE(config$verbose)
 selected_metrics <- normalize_analysis_metrics(config$analysis_metrics)
+
+# Determine which fields should be skipped (nulled out) when loading from CSV.
+# HRV/HFV values from the Garmin CSV export are unreliable, so they should
+# always come from the API when available.  This applies in both 'csv' and
+# 'combined' modes.  In 'combined' mode the API is queried for ALL sensor
+# days (not just gaps) so that the skipped fields can be filled in.
+csv_skip_fields <- character(0)
+hrv_enabled <- "HRV" %in% selected_metrics
+if (hrv_enabled) {
+  csv_skip_fields <- trimws(unlist(sleep_source_cfg$csv_skip_fields %||% "HRV"))
+  csv_skip_fields <- csv_skip_fields[csv_skip_fields != ""]
+}
+if (isTRUE(verbose) && length(csv_skip_fields) > 0) {
+  cat(sprintf("CSV skip fields: %s
+", paste(csv_skip_fields, collapse = ", ")))
+}
 
 # summary interval for reported value ranges; default is 90% if config value missing or invalid
 summary_interval <- if (!is.null(config$summary_interval)) as.numeric(config$summary_interval) else NA_real_
@@ -338,6 +823,10 @@ close_graphics_device <- function(device_id) {
   if (is.null(device_id) || is.na(device_id) || device_id <= 1L) {
     return(invisible(FALSE))
   }
+  current_devices <- grDevices::dev.list()
+  if (is.null(current_devices) || !(device_id %in% as.integer(current_devices))) {
+    return(invisible(FALSE))
+  }
   tryCatch({
     suppressWarnings(grDevices::dev.off(which = device_id))
     invisible(TRUE)
@@ -357,7 +846,7 @@ slugify_plot_name <- function(...) {
   tolower(plot_name)
 }
 
-save_plot_image <- function(plot_object, file_stub, width = 10, height = 6, dpi = 300) {
+save_plot_image <- function(plot_object, file_stub, width = 10, height = 6, dpi = 450) {
   if (dry_run || !plot_export_enabled) return(invisible(NULL))
   dir.create(plot_output_dir, recursive = TRUE, showWarnings = FALSE)
   file_path <- file.path(plot_output_dir, paste0(file_stub, ".png"))
@@ -647,11 +1136,20 @@ if (!is.null(filter_arg)) {
 
 # helper that applies parsing orders by type and quiet=TRUE
 parse_datetime_safe <- function(x, type = "garmin_datetime") {
+  x_clean <- x
+  if (type == "garmin_time") {
+    x_clean <- sub("\\s*\\(UTC[+-]\\d{2}:?\\d{2}\\)\\s*$", "", as.character(x))
+  }
   if (is.null(orders[[type]])) {
     warning("no parse orders for type: ", type)
-    return(parse_date_time(x, quiet = TRUE))
+    return(parse_date_time(x_clean, quiet = TRUE))
   }
-  res <- parse_date_time(x, orders = orders[[type]], quiet = TRUE)
+  res <- parse_date_time(x_clean, orders = orders[[type]], quiet = TRUE)
+  if (type == "garmin_time" && any(is.na(res))) {
+    iso_res <- suppressWarnings(ymd_hms(x_clean, quiet = TRUE))
+    replace_idx <- is.na(res) & !is.na(iso_res)
+    res[replace_idx] <- iso_res[replace_idx]
+  }
   # warn only for actual parse failures; plain missing values are expected
   if (length(res) > 0 && any(is.na(res))) {
     x_chr <- as.character(x)
@@ -672,6 +1170,7 @@ sensor_locale <- locale(decimal_mark = loc$decimal_mark %||% ",")
 list_csv_files <- function(dir, recursive = FALSE) {
   if (!dir.exists(dir)) return(character(0))
   files <- list.files(path = dir, pattern = "\\.csv$", recursive = recursive, full.names = TRUE)
+  files <- files[!grepl("(^|[/\\\\])Cache([/\\\\]|$)", files, ignore.case = TRUE)]
   normalizePath(files, winslash = "/", mustWork = FALSE)
 }
 
@@ -908,7 +1407,11 @@ format_hours_minutes <- function(hours) {
   out
 }
 
-outlier_metrics <- c("Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD", "Sleep_Score", "HRV", "RHR", "Sleep_Duration")
+outlier_metrics <- c(
+  "Avg_Temp", "Temp_SD", "Avg_Rel_Hum", "Rel_Hum_SD", "Avg_Abs_Hum", "Abs_Hum_SD",
+  "Sleep_Score", "HRV", "RHR", "Sleep_Duration", "Deep_Sleep_Percentage",
+  "REM_Percentage", "Stress", "Wake_Time", "Restless_Moments"
+)
 
 parse_outlier_threshold_value <- function(val, metric = NULL) {
   if (is.null(val) || length(val) == 0 || is.na(val) || val == "") return(NA_real_)
@@ -1194,7 +1697,7 @@ value_outlier_scope <- function(metric) {
 filter_outlier_rows_for_metric <- function(df, metric) {
   if (is.null(df) || nrow(df) == 0) return(df)
   if (!"Self_Outlier_Columns" %in% names(df) || !"Value_Outlier_Columns" %in% names(df)) return(df)
-  df %>% filter(!(
+  df %>% dplyr::filter(!(
     map_lgl(Self_Outlier_Columns, function(cols) metric %in% cols) |
     map_lgl(Value_Outlier_Columns, function(cols) {
       any(vapply(cols, function(value_metric) metric %in% value_outlier_scope(value_metric), logical(1)))
@@ -1379,9 +1882,13 @@ if (!is.null(cli_filter) && length(cli_filter$sensor_include) > 0) {
   config$analysis_filter$sensor_include <- cli_filter$sensor_include
 }
 
+empty_calendar_daily <- function() {
+  tibble(Date = as.Date(character()), Sensor = character(), Sensor_Raw = character(), Flags = character(), Flags_List = list())
+}
+
 load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   if (is.null(calendar_cfg) || !isTRUE(calendar_cfg$enabled)) {
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   mode <- tolower(calendar_cfg$mode %||% "url")
@@ -1390,11 +1897,11 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
 
   if (mode == "url" && url_value == "") {
     cat("Calendar enabled but URL is empty. Calendar assignments skipped.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
   if (mode == "file" && file_value == "") {
     cat("Calendar enabled but file_path is empty. Calendar assignments skipped.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   lines <- tryCatch(read_ics_lines(mode = mode, url_value = url_value, file_value = file_value),
@@ -1403,7 +1910,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
                       character(0)
                     })
   if (length(lines) == 0) {
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   unfolded <- unfold_ics_lines(lines)
@@ -1412,7 +1919,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   n_events <- min(length(begin_idx), length(end_idx))
   if (n_events == 0) {
     cat("Calendar loaded, but no VEVENT entries found.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   event_rows <- vector("list", n_events)
@@ -1473,7 +1980,7 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
   events_daily <- bind_rows(event_rows)
   if (nrow(events_daily) == 0) {
     cat("Calendar events found, but no Sensor/Flags metadata parsed.\n")
-    return(tibble(Date = as.Date(character()), Sensor = character(), Flags = character()))
+    return(empty_calendar_daily())
   }
 
   calendar_daily <- events_daily %>%
@@ -1494,7 +2001,9 @@ load_calendar_daily <- function(calendar_cfg, parser_cfg) {
     cat(sprintf("Calendar warning: %d day(s) had conflicting sensors and were set to NA.\n", conflicting_sensor_days))
   }
 
-  calendar_daily <- calendar_daily %>% select(Date, Sensor, Flags, Flags_List)
+  calendar_daily <- calendar_daily %>%
+    mutate(Sensor_Raw = Sensor) %>%
+    select(Date, Sensor, Sensor_Raw, Flags, Flags_List)
 
   cat(sprintf("Calendar loaded: %d days parsed.\n\n", nrow(calendar_daily)))
   calendar_daily
@@ -1704,10 +2213,18 @@ classification <- local({
   cat("\n")
 
   # classify discovered files
-  sleep_candidates <- all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
   sensor_candidates <- all_data_files[sapply(all_data_files, is_sensor_csv, sensor_files = config$sensor_files)]
+  sleep_candidates <- if (sleep_source_uses_csv) {
+    all_data_files[sapply(all_data_files, is_sleep_csv, mapping = config$column_names)]
+  } else {
+    character(0)
+  }
   unclassified_files <- setdiff(all_data_files, c(sleep_candidates, sensor_candidates))
-  cat(sprintf("Sleep candidates: %d\n", length(sleep_candidates)))
+    if (sleep_source_uses_csv) {
+      cat(sprintf("Sleep candidates: %d\n", length(sleep_candidates)))
+    } else {
+      cat("Sleep CSV scan skipped (active source: ", sleep_source_mode, ").\n", sep = "")
+    }
   if (isTRUE(verbose) && length(sleep_candidates) > 0) cat(paste0("    ", sleep_candidates, collapse="\n"), "\n")
   # show canonical names
   if (isTRUE(verbose) && length(sleep_candidates) > 0) {
@@ -1729,7 +2246,11 @@ classification <- local({
   cat("\n")
 
   # expand explicit paths and merge with discovered names
-  explicit_sleep_raw <- file.path(config$data_directory, config$sleep_data_sources)
+  explicit_sleep_raw <- if (sleep_source_uses_csv) {
+    file.path(config$data_directory, config$sleep_data_sources)
+  } else {
+    character(0)
+  }
   explicit_sensor_raw <- unlist(lapply(config$sensor_files, function(x) file.path(config$data_directory, x$path)))
   explicit_sleep <- expand_explicit(explicit_sleep_raw, all_data_files)
   explicit_sensor <- expand_explicit(explicit_sensor_raw, all_data_files)
@@ -1752,9 +2273,28 @@ all_sensor_files <- classification$all_sensor_files
 # explicit lists from config are still respected but merged with discoveries
 # (handled above in the classification block)
 
-mapping <- config$column_names
+ mapping <- config$column_names
+
+ # Direct `source()` runs still need an API query window. Use an optional
+ # configured range, defaulting to the last 365 days through today.
+ sleep_query_cfg <- sleep_source_cfg$query %||% list()
+ query_start_value <- trimws(as.character(sleep_query_cfg$date_start %||% ""))
+ query_end_value <- trimws(as.character(sleep_query_cfg$date_end %||% ""))
+ query_days <- suppressWarnings(as.integer(sleep_query_cfg$days %||% 30L))
+ if (is.na(query_days) || query_days < 1L) query_days <- 30L
+ start_date <- if (nzchar(query_start_value)) as.Date(query_start_value) else Sys.Date() - lubridate::days(query_days - 1L)
+ end_date <- if (nzchar(query_end_value)) as.Date(query_end_value) else Sys.Date()
+ if (is.na(start_date) || is.na(end_date) || end_date < start_date) {
+   stop("Invalid sleep_source.query.date_start/date_end; expected YYYY-MM-DD with date_end >= date_start.")
+ }
+ cat(sprintf("Sleep API query window: %s -> %s (%d days)\n", start_date, end_date, as.integer(end_date - start_date) + 1L))
 
 # read sleep data, track source file and canonical name per row
+sleep_df_raw <- if (sleep_source_mode == "api") {
+  read_sleep_api(mapping)
+} else if (sleep_source_mode == "garmin") {
+  read_garmin_bridge(start_date, end_date)
+} else {
 read_sleep_file <- function(f) {
   df <- read_garmin_fixed(f)
   hdr <- names(df)
@@ -1809,6 +2349,7 @@ sleep_df_raw <- if (use_future) {
   furrr::future_map_dfr(all_sleep_files, read_sleep_file)
 } else {
   map_df(all_sleep_files, read_sleep_file)
+}
 }
 
 # read all discovered sensor CSVs, track source file and attempt column renaming
@@ -1902,6 +2443,83 @@ if (nrow(calendar_daily) > 0) {
 
 
 
+if (sleep_source_uses_api && exists("sensor_raw")) {
+  sensor_days <- sort(unique(as.Date(wake_date(sensor_raw$timestamp))))
+  sensor_days <- sensor_days[!is.na(sensor_days)]
+  api_query_dates <- sensor_days
+  if (sleep_source_mode == "combined") {
+    csv_dates <- if ("Date" %in% names(sleep_df_raw)) unique(as.Date(sleep_df_raw$Date)) else as.Date(character(0))
+    api_query_dates <- sleep_source_query_dates(sensor_days, csv_dates, sleep_source_priority, skip_fields = csv_skip_fields)
+  }
+
+  api_df <- tibble()
+  if (length(api_query_dates) > 0) {
+    api_ranges <- split_date_ranges(api_query_dates)
+    if (isTRUE(verbose)) {
+      cat(sprintf("Sleep API query ranges: %d range(s), %d day(s)\n", length(api_ranges), length(api_query_dates)))
+      for (rng in api_ranges) {
+        cat(sprintf("  %s -> %s\n", format(rng$start), format(rng$end)))
+      }
+    }
+    api_df <- if (use_future && length(api_ranges) > 1) {
+      furrr::future_map_dfr(api_ranges, function(rng) read_sleep_api(mapping, date_start = rng$start, date_end = rng$end))
+    } else {
+      map_dfr(api_ranges, function(rng) read_sleep_api(mapping, date_start = rng$start, date_end = rng$end))
+    }
+  } else if (sleep_source_mode == "api") {
+    api_df <- read_sleep_api(mapping)
+  }
+
+  if (sleep_source_mode == "combined") {
+    sleep_df_raw <- merge_sleep_source_rows(sleep_df_raw, api_df, sleep_source_priority, skip_fields = csv_skip_fields)
+  } else if (nrow(api_df) > 0) {
+    sleep_df_raw <- api_df
+  }
+}
+
+# Garmin is the default source. SleepScoreBattle can optionally enrich the
+# Garmin row with custom metrics such as sleep latency, time in bed, and the
+# pre-sleep heart rate. Garmin remains authoritative for duplicate base fields.
+if (sleep_source_mode == "garmin" && sleep_scb_enabled && nzchar(sleep_api_base_url) && nzchar(sleep_api_bearer_token) && (nzchar(sleep_api_user_id) || nzchar(sleep_api_user_email))) {
+  sleep_df_raw <- tryCatch({
+    scb_df <- read_sleep_api(
+      mapping,
+      date_start = start_date,
+      date_end = end_date,
+      enrichment_only = TRUE
+    )
+    merge_sleep_sources(
+      sleep_df_raw,
+      scb_df,
+      primary_label = "garmin",
+      secondary_label = "api",
+      priority = "csv",
+      skip_fields = character(0)
+    )
+  }, error = function(e) {
+    warning(
+      "SleepScoreBattle enrichment failed and was skipped: ",
+      conditionMessage(e),
+      ". Garmin data remains active."
+    )
+    sleep_df_raw
+  })
+} else if (sleep_source_mode == "garmin" && sleep_scb_enabled) {
+  warning("SleepScoreBattle enrichment skipped: base_url, bearer_token and user_id/user_email must all be configured. Garmin data remains active.")
+}
+
+# In pure 'csv' mode, null out unreliable CSV fields (e.g. HRV) since there
+# is no API to supply the correct values.  The column will remain NA.
+if (sleep_source_mode == "csv" && length(csv_skip_fields) > 0) {
+  for (col in intersect(csv_skip_fields, names(sleep_df_raw))) {
+    sleep_df_raw[[col]][!is.na(sleep_df_raw[[col]])] <- NA
+  }
+  if (isTRUE(verbose)) {
+    cat(sprintf("CSV mode: nulled out %d HRV/skip field value(s)
+", length(csv_skip_fields)))
+  }
+}
+
 # build a per-night sensor summary (after any filtering)
 sensor_summary <- sensor_raw %>%
   mutate(Date = wake_date(timestamp),
@@ -1951,13 +2569,30 @@ build_dashboard_df <- function(viz_source, analysis_df, selected_metrics) {
       Sensor = ifelse(!is.na(Actual_Sensor), Actual_Sensor, Sensor),
       Sleep_Duration = format_hours_minutes(Sleep_Duration)
     ) %>%
-    select(Date, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
+    select(Date, Sleep_Source, Sensor, Flags, Sensor_File, used, any_of(selected_metrics), Outlier_Reason) %>%
     mutate(Date_Str = format(Date, "%d.%m.%Y"))
 }
 
 resolve_sleep_col <- function(mapping, hdr, key, alt_key = NULL) {
   col <- NULL
-  if (!is.null(mapping[[key]]) && mapping[[key]] %in% hdr) col <- mapping[[key]]
+  # Garmin bridge rows already use the canonical analysis names. Prefer them
+  # over legacy CSV header names from config.yaml; otherwise rename() receives
+  # both the canonical column and its legacy alias and creates duplicates.
+  canonical <- c(
+    garmin_sleep_score = "Sleep_Score",
+    garmin_hrv = "HRV",
+    garmin_rhr = "RHR",
+    garmin_duration = "Sleep_Duration",
+    garmin_deep_sleep_percentage = "Deep_Sleep_Percentage",
+    garmin_rem_percentage = "REM_Percentage",
+    garmin_stress = "Stress",
+    garmin_wake_time = "Wake_Time",
+    garmin_restless_moments = "Restless_Moments"
+  )[[key]]
+  if (!is.null(canonical) && canonical %in% hdr) return(canonical)
+  candidates <- unlist(mapping[[key]] %||% character(0), use.names = FALSE)
+  matches <- candidates[candidates %in% hdr]
+  if (length(matches) > 0) col <- matches[[1]]
   if (is.null(col) && !is.null(alt_key)) {
     alt_vals <- unlist(mapping[[alt_key]])
     alt_match <- alt_vals[alt_vals %in% hdr]
@@ -1973,12 +2608,48 @@ sleep_complete <- {
   hrv_col <- resolve_sleep_col(mapping, hdr, "garmin_hrv", "garmin_hrv_alt")
   rhr_col <- resolve_sleep_col(mapping, hdr, "garmin_rhr")
   duration_col <- resolve_sleep_col(mapping, hdr, "garmin_duration")
+  deep_col <- resolve_sleep_col(mapping, hdr, "garmin_deep_sleep_percentage")
+  rem_col <- resolve_sleep_col(mapping, hdr, "garmin_rem_percentage")
+  stress_col <- resolve_sleep_col(mapping, hdr, "garmin_stress")
+  wake_col <- resolve_sleep_col(mapping, hdr, "garmin_wake_time")
+  restless_col <- resolve_sleep_col(mapping, hdr, "garmin_restless_moments")
   if (!is.null(sleep_col)) rename_map[["Sleep_Score"]] <- sleep_col
   if (!is.null(hrv_col)) rename_map[["HRV"]] <- hrv_col
   if (!is.null(rhr_col)) rename_map[["RHR"]] <- rhr_col
   if (!is.null(duration_col)) rename_map[["Sleep_Duration"]] <- duration_col
-  sleep_df_raw %>% rename(!!!rename_map) %>%
-    mutate(across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration")), clean_val_final))
+  if ("Deep_Sleep_Seconds" %in% hdr) rename_map[["Deep_Sleep_Seconds"]] <- "Deep_Sleep_Seconds"
+  if ("REM_Seconds" %in% hdr) rename_map[["REM_Seconds"]] <- "REM_Seconds"
+  if (!is.null(deep_col)) rename_map[["Deep_Sleep_Percentage"]] <- deep_col
+  if (!is.null(rem_col)) rename_map[["REM_Percentage"]] <- rem_col
+  if (!is.null(stress_col)) rename_map[["Stress"]] <- stress_col
+  if (!is.null(wake_col)) rename_map[["Wake_Time"]] <- wake_col
+  if (!is.null(restless_col)) rename_map[["Restless_Moments"]] <- restless_col
+  out <- sleep_df_raw %>% rename(!!!rename_map) %>%
+    mutate(
+      Date = as.Date(Date),
+      across(any_of(c("Sleep_Score", "HRV", "RHR", "Sleep_Duration", "Deep_Sleep_Percentage",
+                      "REM_Percentage", "Stress", "Wake_Time", "Restless_Moments")), clean_val_final)
+    )
+  if ("Deep_Sleep_Seconds" %in% names(out) || "REM_Seconds" %in% names(out)) {
+    duration_hours_or_seconds <- if ("Sleep_Duration" %in% names(out)) out$Sleep_Duration else rep(NA_real_, nrow(out))
+    duration_seconds <- ifelse(
+      is.na(duration_hours_or_seconds), NA_real_,
+      ifelse(duration_hours_or_seconds > 24, duration_hours_or_seconds, duration_hours_or_seconds * 3600)
+    )
+    if ("Deep_Sleep_Seconds" %in% names(out)) {
+      out$Deep_Sleep_Percentage <- as.numeric(out$Deep_Sleep_Seconds) / duration_seconds * 100
+    }
+    if ("REM_Seconds" %in% names(out)) {
+      out$REM_Percentage <- as.numeric(out$REM_Seconds) / duration_seconds * 100
+    }
+  }
+  out
+}
+if (!"Sleep_Source" %in% names(sleep_complete)) {
+  sleep_complete$Sleep_Source <- ifelse(
+    startsWith(as.character(sleep_complete$Source_File), "api://"), "api",
+    ifelse(startsWith(as.character(sleep_complete$Source_File), "garmin://"), "garmin", "csv")
+  )
 }
 
 # drop rows with missing critical sleep metrics immediately
@@ -2032,14 +2703,36 @@ compute_nightly_sensor_summary <- function(row, sensor_raw, default_sensor, padd
     )
 }
 
-sleep_rows <- sleep_complete %>% 
-  filter(!is.na(Sleep_Score), !is.na(HRV), !is.na(RHR)) %>%
+calendar_daily <- calendar_daily %>% mutate(Date = as.Date(Date))
+
+sleep_rows <- sleep_complete %>%
+  filter(!is.na(Date), !is.na(bedtime), !is.na(waketime)) %>%
   left_join(calendar_daily %>% select(Date, Sensor, Sensor_Raw, Flags, Flags_List), by = "Date") %>%
   mutate(
     Sensor = ifelse(is.na(Sensor) & is.na(Sensor_Raw) & !is.na(calendar_default_sensor),
                     calendar_default_sensor,
                     Sensor)
   )
+
+if (nrow(sleep_rows) == 0) {
+  available_counts <- vapply(
+    c("Sleep_Score", "HRV", "RHR"),
+    function(metric) {
+      if (!metric %in% names(sleep_complete)) return(0L)
+      sum(!is.na(sleep_complete[[metric]]))
+    },
+    integer(1)
+  )
+  stop(sprintf(
+    paste0(
+      "No sleep nights contain all required Garmin metrics (Sleep_Score, HRV, RHR). ",
+      "Non-missing values: Sleep_Score=%d, HRV=%d, RHR=%d."
+    ),
+    available_counts[["Sleep_Score"]],
+    available_counts[["HRV"]],
+    available_counts[["RHR"]]
+  ))
+}
 
 temp_mapped <- if (nrow(sleep_rows) == 0) {
   sleep_rows
@@ -2077,7 +2770,8 @@ report_nightly_review <- function(temp_mapped) {
       Sensor_Files,
       Source_File,
       Sensor_Names_Raw = Sensor_Names,
-      Sleep_Source = Source_File,
+      Sleep_Source = if ("Sleep_Source" %in% names(temp_mapped)) Sleep_Source else ifelse(startsWith(as.character(Source_File), "api://"), "api", "csv"),
+      Sleep_Source_File = Source_File,
       Sleep_Name = ifelse(
         str_detect(canonical_basename(Source_File), regex("schlaf", ignore_case = TRUE)),
         "Sleep",
@@ -2098,9 +2792,9 @@ report_nightly_review <- function(temp_mapped) {
     )
 
   cat(sprintf(
-    "Review DF constructed: %d nights, %d unique sleep files (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n",
+    "Review DF constructed: %d nights, %d unique sleep sources (%d canonical), %d unique sensor file paths (%d canonical)\n\n\n",
     nrow(review_df),
-    n_distinct(review_df$Sleep_Source),
+    n_distinct(review_df$Sleep_Source_File),
     n_distinct(review_df$Sleep_Name),
     n_distinct(unlist(review_df$Sensor_Files)),
     n_distinct(unlist(review_df$Sensor_Names))
@@ -2155,7 +2849,7 @@ dashboard_df <- build_dashboard_df(outlier_result$all, analysis_df, selected_met
 
 report_nightly_exclusions <- function(sleep_complete, temp_mapped, excluded_outlier_dates_dates, n_before_date_filter, n_after_date_filter, n_before_analysis_filter, n_after_analysis_filter) {
   excluded_sleep_dates <- sleep_complete %>%
-    filter(is.na(Sleep_Score) | is.na(HRV) | is.na(RHR)) %>%
+  filter(is.na(Date) | is.na(bedtime) | is.na(waketime)) %>%
     pull(Date)
 
   excluded_sensor_dates <- temp_mapped %>%
@@ -2253,7 +2947,10 @@ report_nightly_statistics(
 
 # --- Plot helper functions (extracted so the same logic can be called twice) ---
 # Define biomarker variables (sleep quality indicators)
-bio_vars <- intersect(selected_metrics, c("Sleep_Score", "HRV", "RHR"))
+bio_vars <- intersect(selected_metrics, c(
+  "Sleep_Score", "HRV", "RHR", "Deep_Sleep_Percentage", "REM_Percentage",
+  "Stress", "Wake_Time", "Restless_Moments"
+))
   if (length(bio_vars) == 0) {
     warning("No selected bio metrics available for impact analysis; scatter and matrix plots will be skipped.")
   }
@@ -2341,11 +3038,26 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
   # Matrix Dashboard - ensure each row is one bio metric and each column is one environment metric
   num_cols <- max(1, length(env_analysis_vars))
   num_rows <- max(1, length(bio_vars))
+  # Keep every matrix cell readable when many metrics are selected.  The
+  # dashboard is exported as a page whose size grows with the number of rows;
+  # explicit row heights also prevent gridExtra from compressing the plots.
+  matrix_cell_width <- 4.5
+  matrix_cell_height <- if (num_rows > 6) 3.75 else 3.25
+  matrix_theme <- theme_minimal(base_size = 8, base_family = "") +
+    theme(
+      text = element_text(family = ""),
+      plot.title = element_text(size = 7, face = "bold", family = ""),
+      axis.title = element_text(size = 8, family = ""),
+      axis.text = element_text(size = 7, family = "")
+    )
   matrix_plots <- vector("list", num_rows * num_cols)
   plot_index <- 1
 
   for(m in bio_vars) {
     m_color <- metric_colors[match(m, metric_list)]
+    if (length(m_color) == 0L || is.na(m_color) || !nzchar(m_color)) {
+      m_color <- "black"
+    }
     for(env_name in names(env_analysis_vars)) {
       e_col <- env_analysis_vars[[env_name]]$col
       e_unit <- env_analysis_vars[[env_name]]$unit
@@ -2356,12 +3068,9 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
           filter(!is.na(.data[[e_col]]), !is.na(.data[[m]]))
         p_mat <- ggplot(sub_mat, aes(x = .data[[e_col]], y = .data[[m]])) +
           geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = m_color, fill = m_color, alpha = 0.1, linewidth = 1) +
-          theme_minimal(base_size = 8, base_family = "") +
+          matrix_theme +
           labs(x = e_unit, y = m, title = paste(m, "x", env_name)) +
-          theme(
-            text = element_text(family = ""),
-            plot.title = element_text(size = 7, face = "bold", family = "")
-          )
+          theme(plot.title = element_text(color = m_color))
 
         if(!is.null(opt)) {
           p_mat <- p_mat + geom_vline(xintercept = opt, linetype = "dashed", color = "black", alpha = 0.6)
@@ -2385,25 +3094,57 @@ plot_scatter_and_matrix <- function(analysis_df, env_analysis_vars, metric_list,
   if(length(matrix_plots) > 0) {
     tryCatch({
       gc()
-      matrix_dashboard <- gridExtra::arrangeGrob(
-        grobs = matrix_plots,
-        ncol = num_cols,
-        top = textGrob("Environmental Impact Matrix (with Optima)", gp = gpar(fontsize = 12, font = 2, fontfamily = ""))
-      )
-      drop_plot_objects("matrix_plots", env = environment())
-      gc(FALSE)
-      save_plot_image(matrix_dashboard, slugify_plot_name("impact", "matrix"), width = 3 * num_cols, height = 2.5 * num_rows)
-      if (!dry_run) {
-        tryCatch({
-          suppressWarnings(grid::grid.newpage())
-          suppressWarnings(grid::grid.draw(matrix_dashboard))
-          if (interactive()) try(graphics::dev.flush(), silent = TRUE)
-        }, error = function(e) {
-          warning(sprintf("Failed to render matrix dashboard to screen: %s\n", conditionMessage(e)))
-          cat("Matrix dashboard saved to file but could not be rendered on screen.\n")
-        })
+      max_page_rows <- 3L
+      max_page_cols <- 4L
+      row_groups <- split(seq_len(num_rows), ceiling(seq_len(num_rows) / max_page_rows))
+      col_groups <- split(seq_len(num_cols), ceiling(seq_len(num_cols) / max_page_cols))
+      page_count <- length(row_groups) * length(col_groups)
+      page_number <- 1L
+
+      for (row_indices in row_groups) {
+        for (col_indices in col_groups) {
+          page_plot_indices <- unlist(lapply(row_indices, function(row_index) {
+            (row_index - 1L) * num_cols + col_indices
+          }), use.names = FALSE)
+          page_plots <- matrix_plots[page_plot_indices]
+          page_rows <- length(row_indices)
+          page_cols <- length(col_indices)
+          page_label <- sprintf("%02d", page_number)
+
+          matrix_dashboard <- gridExtra::arrangeGrob(
+            grobs = page_plots,
+            ncol = page_cols,
+            widths = rep(matrix_cell_width, page_cols),
+            heights = rep(matrix_cell_height, page_rows),
+            top = textGrob(
+              sprintf("Environmental Impact Matrix (with Optima) - Part %s/%02d", page_label, page_count),
+              gp = gpar(fontsize = 12, font = 2, fontfamily = "")
+            )
+          )
+
+          save_plot_image(
+            matrix_dashboard,
+            slugify_plot_name("impact", "matrix", "part", page_label),
+            width = matrix_cell_width * page_cols,
+            height = matrix_cell_height * page_rows + 0.5
+          )
+          if (!dry_run) {
+            tryCatch({
+              suppressWarnings(grid::grid.newpage())
+              suppressWarnings(grid::grid.draw(matrix_dashboard))
+              if (interactive()) try(graphics::dev.flush(), silent = TRUE)
+            }, error = function(e) {
+              warning(sprintf("Failed to render matrix dashboard part %s: %s\n", page_label, conditionMessage(e)))
+              cat(sprintf("Matrix dashboard part %s/%02d was saved but could not be rendered on screen.\n", page_label, page_count))
+            })
+          }
+          drop_plot_objects("matrix_dashboard", "page_plots", env = environment())
+          page_number <- page_number + 1L
+          gc(FALSE)
+        }
       }
-      drop_plot_objects("matrix_dashboard", env = environment())
+
+      drop_plot_objects("matrix_plots", env = environment())
       gc(FALSE)
     }, error = function(e) {
       warning(sprintf("Failed to arrange matrix plots: %s\n", conditionMessage(e)))
@@ -2434,7 +3175,14 @@ run_plot_pass <- function(mode, dashboard_df, analysis_df, env_analysis_vars, me
     options(r.plot.useHttpgd = TRUE, vsc.plot.useHttpgd = TRUE, vsc.httpgd = TRUE)
     tryCatch(
       {
-        invisible(capture.output(httpgd::hgd()))
+        # Use a large canvas for the browser/httpgd output.  Otherwise the
+        # complete matrix is rasterized into the small default plot pane.
+        browser_plot_width <- max(1600, 450 * length(env_analysis_vars))
+        browser_plot_height <- max(1200, 300 * length(bio_vars))
+        invisible(capture.output(httpgd::hgd(
+          width = browser_plot_width,
+          height = browser_plot_height
+        )))
         opened_device_id <- tryCatch(grDevices::dev.cur(), error = function(e) NULL)
       },
       error = function(e) warning("Failed to start httpgd: ", conditionMessage(e), "\n")

@@ -281,3 +281,35 @@ For each selected metric in the summary table:
 ---
 
 If you want, this README can also be extended with a dedicated CSV column reference or an example `config.private.yaml`.
+
+## Sleep Source
+
+- Default mode is `garmin` and uses the read-only `python-garminconnect` wrapper.
+- Set `sleep_source.mode: csv` to use local Garmin CSV exports.
+- Set `sleep_source.mode: api` or `sleepscorebattle` to fetch SleepScoreBattle data.
+- Set `sleep_source.mode: garmin` to fetch Garmin Connect data through the Python bridge.
+- Set `sleep_source.mode: combined` to use both sources per day.
+- Control fallback order with `sleep_source.priority: csv`, `api`, or `garmin`.
+- Garmin credentials use `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and optionally `GARMINTOKENS`.
+  The first login may ask for an MFA code; subsequent runs reuse the wrapper token.
+- Run `python GarminConnectBridge/setup_garmin.py` for interactive setup. It asks for
+  E-Mail, password, token location, and MFA when required, then creates the local
+  `.env` file. On Windows, the password is stored encrypted with DPAPI in
+  `.garmin-credentials.dpapi` and is never stored as plain text.
+- Run `python GarminConnectBridge/mfa_update.py` to refresh the Garmin token and
+  enter a new MFA code. If authentication has expired, the script shows a Windows
+  notification and exits with an error.
+- Install the bridge dependencies with `pip install -r GarminConnectBridge/requirements.txt`.
+- Garmin raw responses are cached under `.cache/garmin`; SleepScoreBattle responses are
+  cached under `.cache/sleepscorebattle`. Expired cache entries are used only as a
+  fallback for temporary network/server failures.
+- Configure optional Garmin metrics in `sleep_source.garmin.metrics` using `hrv`,
+  `respiration`, `spo2`, `stress`, `body_battery`, or `heart_rate`.
+- Set `sleep_source.garmin.lifestyle_logging.enabled: true` to load Garmin
+  LifestyleLogging data when the account exposes it.
+- Set `sleep_source.sleepscorebattle.enabled: true` while using Garmin mode to
+  enrich Garmin nights with SleepScoreBattle custom metrics such as sleep latency,
+  time in bed, pre-sleep heart rate, and other returned sleep metrics.
+- Configure `sleep_source.sleepscorebattle.base_url`, `user_id` or `user_email`,
+  and `bearer_token` in `RScript/config.private.yaml`.
+- Sensor and calendar data stay local; only the sleep input changes.

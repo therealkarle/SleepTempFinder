@@ -1,0 +1,21 @@
+## Upload-safe private config - no secrets or personal data
+# Use this copy when you want to share the config structure only.
+
+# Sleep input mode:
+# - csv: keep the current file scan under data_directory
+# - api: fetch sleep data from the Sleep Score Private API
+# - combined: use csv first, then fill gaps from the API
+sleep_source:
+  mode: "combined"
+  priority: "csv"
+  api:
+    base_url: ""
+    user_id: ""
+    user_email: ""
+    bearer_token: ""
+
+calendar_source:
+  enabled: true
+  mode: "url"
+  url: ""
+  file_path: ""
