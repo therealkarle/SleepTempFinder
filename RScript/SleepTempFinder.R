@@ -2363,7 +2363,18 @@ read_sensor_file <- function(fp) {
            Sensor_ID = identify_sensor_id(fp))
 }
 
-sensor_raw <- if (use_future) {
+sensor_raw <- if (length(all_sensor_files) == 0) {
+  # Create empty sensor_raw with correct structure if no files found
+  tibble(
+    timestamp = as.POSIXct(character()),
+    room_temp = numeric(),
+    rel_hum = numeric(),
+    abs_hum = numeric(),
+    Source_File = character(),
+    Source_Name = character(),
+    Sensor_ID = character()
+  )
+} else if (use_future) {
   furrr::future_map_dfr(all_sensor_files, read_sensor_file)
 } else {
   map_df(all_sensor_files, read_sensor_file)
@@ -2684,6 +2695,23 @@ compute_nightly_sensor_summary <- function(row, sensor_raw, default_sensor, padd
   if (is.na(sensor_selected) && is.na(row$Sensor_Raw) && !is.na(default_sensor)) {
     sensor_selected <- default_sensor
   }
+  
+  # Handle empty sensor_raw gracefully
+  if (is.null(sensor_raw) || nrow(sensor_raw) == 0) {
+    return(row %>%
+      mutate(
+        Avg_Temp = NA_real_,
+        Temp_SD = NA_real_,
+        Avg_Rel_Hum = NA_real_,
+        Rel_Hum_SD = NA_real_,
+        Avg_Abs_Hum = NA_real_,
+        Abs_Hum_SD = NA_real_,
+        Raw_N_Readings = 0L,
+        Sensor_Files = list(character()),
+        Sensor_Names = list(character())
+      ))
+  }
+  
   bed_pad <- row$bedtime - minutes(padding_minutes)
   wak_pad <- row$waketime + minutes(padding_minutes)
   idx <- which(sensor_raw$timestamp >= bed_pad & sensor_raw$timestamp <= wak_pad)
