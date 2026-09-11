@@ -257,6 +257,7 @@ analysis_metrics:
 #   api      - fetch all sleep data from the Sleep Score Private API
 #   sleepscorebattle - alias for api
 #   garmin   - fetch sleep data through python-garminconnect (default)
+#   garmin_local - read the complete history from a local garmin-local-mcp SQLite database
 #   combined - use both; priority determines which source wins for dates
 #              that appear in both.  Additionally, csv_skip_fields lets you
 #              pull specific metrics (e.g. HRV) from the API only.
@@ -306,6 +307,9 @@ sleep_source:
     lifestyle_logging:
       enabled: true
       output_dir: "../Cache/garmin/lifestyle_logging"
+  garmin_local:
+    # Read-only SQLite warehouse path. No date filter is applied in this mode.
+    db_path: "C:/Users/flori/.garmin-mcp/garmin.db"
   sleepscorebattle:
     enabled: true
     # Empty means: load every custom field returned by SleepScoreBattle,

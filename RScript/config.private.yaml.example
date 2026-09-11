@@ -21,6 +21,10 @@ sleep_source:
     lifestyle_logging:
       enabled: true
       output_dir: "../Cache/garmin/lifestyle_logging"
+  # Alternative local-first source. It reads the complete database history
+  # read-only; query.days/date_start/date_end are not used in this mode.
+  garmin_local:
+    db_path: "C:/Users/you/.garmin-mcp/garmin.db"
   sleepscorebattle:
     enabled: true
     # Empty loads all returned custom fields, including pre-sleep HR,

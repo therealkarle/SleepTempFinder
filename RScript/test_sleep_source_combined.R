@@ -7,6 +7,7 @@ stopifnot(identical(normalize_sleep_source_mode(" combined "), "combined"))
 stopifnot(identical(normalize_sleep_source_priority(" api "), "api"))
 stopifnot(identical(normalize_sleep_source_mode(" sleepscorebattle "), "api"))
 stopifnot(identical(normalize_sleep_source_mode(" garmin "), "garmin"))
+stopifnot(identical(normalize_sleep_source_mode(" garmin_local "), "garmin_local"))
 stopifnot(identical(normalize_sleep_source_priority(" garmin "), "garmin"))
 
 ranges <- split_date_ranges(as.Date(c("2026-07-01", "2026-07-02", "2026-07-04", "2026-07-05")))
