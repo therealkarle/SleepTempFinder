@@ -289,7 +289,7 @@ analysis_metrics:
 #       bearer_token: "your-token"
 
 sleep_source:
-  mode: "garmin"
+  mode: "garmin_local"
   priority: "garmin"
   csv_skip_fields: ["HRV"]
   query:
