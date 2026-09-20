@@ -1,0 +1,202 @@
+#!/usr/bin/env Rscript
+
+# Analyse Garmin LifestyleLogging against Garmin sleep metrics.
+
+if (!requireNamespace("yaml", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
+  stop("Install the R packages yaml and jsonlite.")
+}
+
+DEFAULT_METRICS <- list(
+  Sleep_Score = c("Score", "Sleep Score", "sleepScore", "overallSleepScore"),
+  Sleep_Duration = c("Dauer", "Sleep Duration", "sleepDuration", "totalSleepTime"),
+  HRV = c("HFV-Status", "HRV", "avgOvernightHrv", "averageOvernightHrv"),
+  RHR = c("Ruheherzfrequenz", "Resting Heart Rate", "restingHeartRate", "restingHr")
+)
+TRUE_VALUES <- c("true", "yes", "y", "1", "done", "completed", "complete", "ja", "gemacht")
+FALSE_VALUES <- c("false", "no", "n", "0", "not done", "not_done", "nicht gemacht", "nein")
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+norm <- function(x) {
+  x <- tolower(trimws(ifelse(is.na(x), "", as.character(x))))
+  gsub(" +", " ", gsub("_", " ", x))
+}
+
+parse_date <- function(x) {
+  if (is.list(x) && length(x) >= 3) return(as.Date(sprintf("%04d-%02d-%02d", as.integer(x[[1]]), as.integer(x[[2]]), as.integer(x[[3]]))))
+  if (length(x) == 0 || is.null(x) || is.na(x)[1]) return(as.Date(NA))
+  text <- substr(as.character(x)[1], 1, 10)
+  for (format in c("%Y-%m-%d", "%d.%m.%Y", "%m/%d/%Y")) {
+    parsed <- as.Date(text, format = format)
+    if (!is.na(parsed)) return(parsed)
+  }
+  as.Date(NA)
+}
+
+parse_number <- function(x) {
+  if (length(x) == 0 || is.null(x) || is.na(x)[1]) return(NA_real_)
+  text <- trimws(as.character(x)[1])
+  if (!nzchar(text) || text %in% c("--", "-", "n/a", "NA")) return(NA_real_)
+  text <- gsub("[^0-9,.-]", "", text)
+  if (!nzchar(text)) return(NA_real_)
+  if (grepl(",", text, fixed = TRUE) && grepl("\\.", text)) text <- sub(",", ".", gsub("\\.", "", text), fixed = TRUE) else text <- sub(",", ".", text, fixed = TRUE)
+  suppressWarnings(as.numeric(text))
+}
+
+duration_to_hours <- function(x) {
+  number <- parse_number(x); text <- as.character(ifelse(length(x) == 0 || is.null(x), "", x))[1]
+  if (!is.na(number) && !grepl("[hHmMs]", text)) return(number)
+  parts <- regmatches(text, regexec("(?:(\\d+)\\s*h)?\\s*(?:(\\d+)\\s*min?)?", text, perl = TRUE))[[1]]
+  if (length(parts) >= 3 && (nzchar(parts[2]) || nzchar(parts[3]))) return((as.numeric(ifelse(nzchar(parts[2]), parts[2], 0)) * 60 + as.numeric(ifelse(nzchar(parts[3]), parts[3], 0))) / 60)
+  NA_real_
+}
+
+read_json <- function(path) jsonlite::fromJSON(path, simplifyVector = FALSE)
+
+find_daily_logs <- function(value) {
+  if (is.list(value) && !is.null(value$dailyLogList) && is.list(value$dailyLogList)) return(value$dailyLogList)
+  if (is.list(value)) for (item in value) { found <- find_daily_logs(item); if (!is.null(found)) return(found) }
+  NULL
+}
+
+normalize_status <- function(value) {
+  if (is.logical(value) && length(value)) return(value[1])
+  text <- norm(value)
+  if (text %in% TRUE_VALUES) return(TRUE)
+  if (text %in% FALSE_VALUES) return(FALSE)
+  NA
+}
+
+lifestyle_rows <- function(payload) {
+  logs <- find_daily_logs(payload); if (is.null(logs) && is.list(payload)) logs <- payload
+  rows <- list()
+  for (entry in logs %||% list()) {
+    if (!is.list(entry)) next
+    day <- parse_date(entry$calendarDate %||% entry$date %||% entry$logDate)
+    name <- trimws(as.character(entry$behaviourName %||% entry$behaviorName %||% entry$name %||% entry$label %||% ""))[1]
+    status <- normalize_status(entry$status %||% entry$value)
+    if (is.na(day) || !nzchar(name) || is.na(status)) next
+    key <- as.character(day); if (is.null(rows[[key]])) rows[[key]] <- list()
+    rows[[key]][[name]] <- isTRUE(rows[[key]][[name]] %||% FALSE) || isTRUE(status)
+  }
+  rows
+}
+
+materialize_source <- function(source) {
+  source <- normalizePath(source, mustWork = TRUE)
+  if (dir.exists(source)) return(list(root = source, direct_json = NULL, cleanup = FALSE))
+  if (grepl("\\.zip$", source, ignore.case = TRUE)) {
+    root <- tempfile("garmin_export_"); dir.create(root); utils::unzip(source, exdir = root)
+    return(list(root = root, direct_json = NULL, cleanup = TRUE))
+  }
+  if (grepl("LifestyleLogging\\.json$", source, ignore.case = TRUE)) return(list(root = NULL, direct_json = source, cleanup = FALSE))
+  stop("Input must be a Garmin folder, ZIP archive, or LifestyleLogging.json: ", source)
+}
+
+source_files <- function(materialized, pattern) if (!is.null(materialized$root)) list.files(materialized$root, pattern = pattern, recursive = TRUE, full.names = TRUE, ignore.case = TRUE) else character()
+
+read_csv_flexible <- function(path) {
+  first <- readLines(path, n = 1, encoding = "UTF-8", warn = FALSE)
+  commas <- if (length(first)) lengths(regmatches(first, gregexpr(",", first, fixed = TRUE))) else 0
+  semicolons <- if (length(first)) lengths(regmatches(first, gregexpr(";", first, fixed = TRUE))) else 0
+  separator <- if (semicolons > commas) ";" else ","
+  tryCatch(utils::read.csv(path, sep = separator, check.names = FALSE, stringsAsFactors = FALSE, fileEncoding = "UTF-8-BOM"), error = function(e) NULL)
+}
+
+metric_specs <- function(config) {
+  configured <- config$sleep_metrics %||% names(DEFAULT_METRICS)
+  if (is.list(configured) && !is.null(names(configured))) return(lapply(configured, function(x) as.character(unlist(x))))
+  names <- as.character(unlist(configured)); setNames(lapply(names, function(name) DEFAULT_METRICS[[name]] %||% name), names)
+}
+
+sleep_rows <- function(materialized, specs) {
+  result <- list()
+  for (path in source_files(materialized, "\\.csv$")) {
+    data <- read_csv_flexible(path); if (is.null(data) || !nrow(data)) next
+    date_candidates <- names(data)[norm(names(data)) %in% c("date", "datum", "sleep score 4 wochen", "sleep date", "calendar date")]
+    if (!length(date_candidates)) next
+    date_col <- date_candidates[1]
+    matched <- lapply(specs, function(aliases) { columns <- names(data)[norm(names(data)) %in% norm(aliases)]; if (length(columns)) columns[1] else NA_character_ })
+    if (!any(!is.na(unlist(matched)))) next
+    for (i in seq_len(nrow(data))) {
+      day <- parse_date(data[[date_col]][i]); if (is.na(day)) next
+      key <- as.character(day); if (is.null(result[[key]])) result[[key]] <- list()
+      for (metric in names(specs)) {
+        column <- matched[[metric]]; if (is.na(column)) next
+        value <- if (metric == "Sleep_Duration") duration_to_hours(data[[column]][i]) else parse_number(data[[column]][i])
+        if (!is.na(value) && is.null(result[[key]][[metric]])) result[[key]][[metric]] <- value
+      }
+    }
+  }
+  if (!length(result)) stop("No compatible Garmin sleep CSV found. Provide a Garmin export folder/ZIP or sleep_input.")
+  result
+}
+
+group_stats <- function(values, interval) {
+  if (!length(values)) return(list(n = 0, mean = NULL, median = NULL, sd = NULL, interval_low = NULL, interval_high = NULL))
+  low <- (1 - interval) / 2
+  list(n = length(values), mean = mean(values), median = median(values), sd = if (length(values) > 1) stats::sd(values) else NULL, interval_low = as.numeric(stats::quantile(values, low, names = FALSE)), interval_high = as.numeric(stats::quantile(values, 1 - low, names = FALSE)))
+}
+
+analyse <- function(config, lifestyle_materialized, sleep_materialized) {
+  start <- parse_date(config$start_date); end <- parse_date(config$end_date)
+  if (is.na(start) || is.na(end) || end < start) stop("Config requires valid start_date and end_date with end_date >= start_date")
+  interval <- as.numeric(config$value_interval %||% 0.80); confidence <- as.numeric(config$confidence_level %||% 0.95); alpha <- as.numeric(config$significance_level %||% 0.05)
+  if (!(interval > 0 && interval <= 1 && confidence > 0 && confidence < 1 && alpha > 0 && alpha < 1)) stop("Invalid interval, confidence_level, or significance_level")
+  lifestyle_files <- if (!is.null(lifestyle_materialized$direct_json)) lifestyle_materialized$direct_json else source_files(lifestyle_materialized, "LifestyleLogging\\.json$")
+  if (!length(lifestyle_files)) stop("No LifestyleLogging.json found in Garmin export")
+  lifestyle <- list()
+  for (path in lifestyle_files) for (key in names(lifestyle_rows(read_json(path)))) {
+    if (is.null(lifestyle[[key]])) lifestyle[[key]] <- list()
+    entries <- lifestyle_rows(read_json(path))[[key]]
+    for (activity in names(entries)) lifestyle[[key]][[activity]] <- isTRUE(lifestyle[[key]][[activity]]) || isTRUE(entries[[activity]])
+  }
+  specs <- metric_specs(config); sleep <- sleep_rows(sleep_materialized, specs)
+  excluded <- norm(unlist(config$excluded_activities %||% list())); configured <- as.character(unlist(config$activities %||% list()))
+  found <- unique(unlist(lapply(lifestyle, names))); activities <- unique(c(configured, found)); activities <- activities[!norm(activities) %in% excluded]
+  missing_default <- isTRUE(config$missing_activity_is_no %||% TRUE); overrides <- config$missing_activity_is_no_by_activity %||% list()
+  days <- seq.Date(start, end, by = "day"); results <- list(); index <- 1
+  for (activity in sort(activities)) for (metric in names(specs)) {
+    override_name <- names(overrides)[norm(names(overrides)) == norm(activity)][1]
+    missing_no <- if (length(override_name) && !is.na(override_name)) isTRUE(overrides[[override_name]]) else missing_default
+    done_values <- not_done_values <- numeric()
+    for (day in days) {
+      value <- sleep[[as.character(day)]][[metric]] %||% NA_real_; if (is.null(value) || is.na(value)) next
+      status <- lifestyle[[as.character(day)]][[activity]] %||% NA
+      if (is.na(status)) { if (!missing_no) next; status <- FALSE }
+      if (isTRUE(status)) done_values <- c(done_values, value) else not_done_values <- c(not_done_values, value)
+    }
+    done <- group_stats(done_values, interval); not_done <- group_stats(not_done_values, interval)
+    row <- c(list(activity = activity, metric = metric, missing_activity_is_no = missing_no), setNames(done, paste0("done_", names(done))), setNames(not_done, paste0("not_done_", names(not_done))))
+    delta <- p_value <- ci_low <- ci_high <- NULL
+    if (length(done_values) >= 2 && length(not_done_values) >= 2) { delta <- mean(done_values) - mean(not_done_values); test <- stats::t.test(done_values, not_done_values, var.equal = FALSE); p_value <- unname(test$p.value); ci_low <- unname(test$conf.int[1]); ci_high <- unname(test$conf.int[2]) }
+    significant <- !is.null(p_value) && p_value < alpha && !is.null(delta) && delta != 0
+    classification <- if (significant && delta > 0) "significant_positive" else if (significant && delta < 0) "significant_negative" else "not_significant"
+    results[[index]] <- c(row, list(delta = delta, delta_ci_low = ci_low, delta_ci_high = ci_high, p_value = p_value, significant = significant, classification = classification)); index <- index + 1
+  }
+  list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)"), results = results)
+}
+
+write_outputs <- function(result, output_dir, config) {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  for (classification in c("significant_positive", "significant_negative", "not_significant")) {
+    selected <- Filter(function(x) identical(x$classification, classification), result$results)
+    if (length(selected)) {
+      frame <- do.call(rbind, lapply(selected, function(x) as.data.frame(lapply(x, function(v) if (is.null(v)) NA else v), stringsAsFactors = FALSE)))
+      deltas <- as.numeric(frame$delta); frame <- frame[order(is.na(deltas), if (classification == "significant_negative") deltas else -deltas, na.last = TRUE), , drop = FALSE]
+    } else frame <- data.frame(activity = character(), metric = character())
+    utils::write.csv(frame, file.path(output_dir, paste0(classification, ".csv")), row.names = FALSE, na = "")
+  }
+  result$config <- config; jsonlite::write_json(result, file.path(output_dir, "lifestyle_sleep_analysis.json"), auto_unbox = TRUE, pretty = TRUE, na = "null")
+}
+
+args <- commandArgs(trailingOnly = TRUE)
+get_arg <- function(name) { i <- match(name, args); if (is.na(i) || i == length(args)) NULL else args[i + 1] }
+config_path <- get_arg("--config") %||% get_arg("-c")
+if (is.null(config_path)) stop("Usage: Rscript lifestyle_sleep_analysis.R --config <config.yaml> [--input <path>] [--sleep-input <path>]")
+config <- yaml::read_yaml(config_path); input_path <- get_arg("--input") %||% config$input_path; sleep_input <- get_arg("--sleep-input") %||% config$sleep_input
+if (is.null(input_path) || !nzchar(input_path)) stop("Set input_path in the config or provide --input")
+if (is.null(sleep_input) || !nzchar(sleep_input)) sleep_input <- input_path
+lifestyle_source <- materialize_source(input_path); sleep_source <- materialize_source(sleep_input)
+on.exit({ if (lifestyle_source$cleanup) unlink(lifestyle_source$root, recursive = TRUE); if (sleep_source$cleanup && !identical(sleep_source$root, lifestyle_source$root)) unlink(sleep_source$root, recursive = TRUE) }, add = TRUE)
+result <- analyse(config, lifestyle_source, sleep_source); write_outputs(result, config$output_dir %||% "LifestyleLoggingAnalysis/Out", config)
+cat("Analysed", length(result$results), "activity/metric combinations\n")

@@ -1,7 +1,10 @@
 # Independent Garmin LifestyleLogging/sleep analysis configuration.
+input_path: "GarminUserData/2026.04"
 start_date: "2026-01-01"
 end_date: "2026-12-31"
 output_dir: "LifestyleLoggingAnalysis/Out"
+# Optional when --input points directly to LifestyleLogging.json.
+sleep_input: ""
 
 # Include dates where an activity is absent as a negative observation.
 missing_activity_is_no: true

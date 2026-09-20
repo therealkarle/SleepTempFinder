@@ -59,6 +59,13 @@ class LifestyleSleepAnalysisTests(unittest.TestCase):
         self.assertTrue((output / "lifestyle_sleep_analysis.json").exists())
         reader.close()
 
+    def test_direct_lifestyle_file_with_separate_sleep_input(self):
+        lifestyle_file = self.root / "DI_CONNECT" / "DI-Connect-Wellness" / "123_LifestyleLogging.json"
+        reader = ExportReader(lifestyle_file, self.root)
+        result = analyse(self.config(), reader)
+        self.assertTrue(result["results"])
+        reader.close()
+
 
 if __name__ == "__main__":
     unittest.main()

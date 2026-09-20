@@ -17,11 +17,26 @@ personal dates, exclusions, metrics, and output settings. It is a copy of the
 template `GarminLifestyleAnalysisConfig.yaml.example` and is intentionally
 ignored by Git.
 
-Run the analysis with:
+Set `input_path` in the config to either the Garmin export folder, a ZIP file,
+or a direct `LifestyleLogging.json` file. Run the analysis with:
 
 ```sh
 python LifestyleLoggingAnalysis/lifestyle_sleep_analysis.py \
-  --input GarminUserData/2026.01 \
+  --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
+```
+
+The same analysis is available as an R script. It requires the R packages
+`yaml` and `jsonlite` and uses the same YAML configuration and output files:
+
+```sh
+Rscript LifestyleLoggingAnalysis/lifestyle_sleep_analysis.R \
+  --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
+```
+
+If the sleep CSV files are stored elsewhere, set `sleep_input` in the config:
+
+```sh
+python LifestyleLoggingAnalysis/lifestyle_sleep_analysis.py \
   --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
 ```
 

@@ -123,25 +123,38 @@ def lifestyle_rows(payload: Any) -> dict[date, dict[str, bool]]:
 
 
 class ExportReader:
-    def __init__(self, source: str | Path):
+    def __init__(self, source: str | Path, sleep_source: str | Path | None = None):
         self.source = Path(source)
         self.archive: zipfile.ZipFile | None = None
+        self.sleep_reader: ExportReader | None = None
         self._names: list[str] = []
         if self.source.is_file() and zipfile.is_zipfile(self.source):
             self.archive = zipfile.ZipFile(self.source)
             self._names = [n for n in self.archive.namelist() if not n.endswith("/")]
+        elif self.source.is_file() and self.source.name.endswith(LIFESTYLE_SUFFIX):
+            self._names = [self.source.name]
         elif self.source.is_dir():
             self._names = [str(p.relative_to(self.source)) for p in self.source.rglob("*") if p.is_file()]
         else:
-            raise FileNotFoundError(f"Garmin input not found: {self.source}")
+            raise FileNotFoundError(f"Garmin folder, ZIP, or LifestyleLogging JSON not found: {self.source}")
+        if sleep_source is not None:
+            sleep_path = Path(sleep_source)
+            if sleep_path.resolve() != self.source.resolve():
+                self.sleep_reader = ExportReader(sleep_path)
 
     def close(self) -> None:
         if self.archive:
             self.archive.close()
+        if self.sleep_reader:
+            self.sleep_reader.close()
 
     def read_bytes(self, name: str) -> bytes:
+        if self.sleep_reader and name in self.sleep_reader.csv_names():
+            return self.sleep_reader.read_bytes(name)
         if self.archive:
             return self.archive.read(name)
+        if self.source.is_file():
+            return self.source.read_bytes()
         return (self.source / name).read_bytes()
 
     def lifestyle_payloads(self) -> list[Any]:
@@ -151,7 +164,10 @@ class ExportReader:
         return [json.loads(self.read_bytes(name).decode("utf-8-sig")) for name in names]
 
     def csv_names(self) -> list[str]:
-        return [n for n in self._names if n.lower().endswith(".csv")]
+        names = [n for n in self._names if n.lower().endswith(".csv")]
+        if self.sleep_reader:
+            names.extend(self.sleep_reader.csv_names())
+        return names
 
 
 def parse_number(value: Any) -> float | None:
@@ -233,7 +249,10 @@ def sleep_rows(reader: ExportReader, specs: Mapping[str, list[str]]) -> dict[dat
                 if value is not None and metric not in target:
                     target[metric] = value
     if not result:
-        raise ValueError("No compatible Garmin sleep CSV found in export")
+        raise ValueError(
+            "No compatible Garmin sleep CSV found. Provide a Garmin export folder/ZIP "
+            "or configure --sleep-input/sleep_input when --input is a direct LifestyleLogging JSON."
+        )
     return result
 
 
@@ -355,11 +374,16 @@ def write_outputs(result: Mapping[str, Any], output_dir: Path, config: Mapping[s
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", "-i", required=True, help="Garmin export folder or ZIP")
+    parser.add_argument("--input", "-i", help="Optional override for config input_path")
+    parser.add_argument("--sleep-input", help="Optional Garmin folder/ZIP containing sleep CSV files")
     parser.add_argument("--config", "-c", required=True, help="YAML configuration")
     args = parser.parse_args()
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
-    reader = ExportReader(args.input)
+    input_path = args.input or config.get("input_path")
+    if not input_path:
+        parser.error("Set input_path in the config or provide --input")
+    sleep_input = args.sleep_input or config.get("sleep_input") or None
+    reader = ExportReader(input_path, sleep_input)
     try:
         result = analyse(config, reader)
         write_outputs(result, Path(config.get("output_dir", "LifestyleLoggingAnalysis/Out")), config)
