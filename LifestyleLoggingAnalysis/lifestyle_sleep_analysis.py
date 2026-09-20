@@ -149,7 +149,7 @@ class ExportReader:
             self.sleep_reader.close()
 
     def read_bytes(self, name: str) -> bytes:
-        if self.sleep_reader and name in self.sleep_reader.csv_names():
+        if self.sleep_reader and (name in self.sleep_reader.csv_names() or name in self.sleep_reader.sleep_json_names()):
             return self.sleep_reader.read_bytes(name)
         if self.archive:
             return self.archive.read(name)
@@ -167,6 +167,12 @@ class ExportReader:
         names = [n for n in self._names if n.lower().endswith(".csv")]
         if self.sleep_reader:
             names.extend(self.sleep_reader.csv_names())
+        return names
+
+    def sleep_json_names(self) -> list[str]:
+        names = [n for n in self._names if n.replace("\\", "/").lower().endswith("_sleepdata.json")]
+        if self.sleep_reader:
+            names.extend(self.sleep_reader.sleep_json_names())
         return names
 
 
@@ -189,6 +195,25 @@ def parse_number(value: Any) -> float | None:
         return None
 
 
+def json_named_value(value: Any, aliases: Iterable[str]) -> Any:
+    """Find the first scalar JSON value whose key matches an alias."""
+    wanted = {norm(alias) for alias in aliases}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if norm(key) in wanted and not isinstance(child, (dict, list)):
+                return child
+        for child in value.values():
+            found = json_named_value(child, aliases)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = json_named_value(child, aliases)
+            if found is not None:
+                return found
+    return None
+
+
 def duration_to_hours(value: Any) -> float | None:
     number = parse_number(value)
     if number is not None and not re.search(r"[hHmMs]", str(value)):
@@ -196,6 +221,21 @@ def duration_to_hours(value: Any) -> float | None:
     match = re.search(r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*min?)?", str(value or ""), re.I)
     if match and (match.group(1) or match.group(2)):
         return (int(match.group(1) or 0) * 60 + int(match.group(2) or 0)) / 60
+    return None
+
+
+def sleep_json_value(entry: Mapping[str, Any], metric: str, aliases: Iterable[str]) -> float | None:
+    value = json_named_value(entry, aliases)
+    if value is not None:
+        return duration_to_hours(value) if metric == "Sleep_Duration" else parse_number(value)
+    if metric == "Sleep_Score":
+        return parse_number(json_named_value(entry.get("sleepScores", {}), ["overallScore", "overall sleep score"]))
+    if metric == "Sleep_Duration":
+        stages = [entry.get("deepSleepSeconds"), entry.get("lightSleepSeconds"), entry.get("remSleepSeconds")]
+        if all(value is not None for value in stages):
+            seconds = sum(parse_number(value) or 0 for value in stages)
+            if seconds > 0:
+                return seconds / 3600
     return None
 
 
@@ -214,6 +254,24 @@ def metric_specs(config: Mapping[str, Any]) -> dict[str, list[str]]:
 def sleep_rows(reader: ExportReader, specs: Mapping[str, list[str]]) -> dict[date, dict[str, float]]:
     alias_map = {norm(alias): metric for metric, aliases in specs.items() for alias in aliases}
     result: dict[date, dict[str, float]] = {}
+    for name in reader.sleep_json_names():
+        try:
+            payload = json.loads(reader.read_bytes(name).decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            day = parse_date(entry.get("calendarDate") or entry.get("date"))
+            if day is None:
+                continue
+            target = result.setdefault(day, {})
+            for metric, aliases in specs.items():
+                value = sleep_json_value(entry, metric, aliases)
+                if value is not None and metric not in target:
+                    target[metric] = value
     for name in reader.csv_names():
         try:
             text = reader.read_bytes(name).decode("utf-8-sig")
@@ -353,7 +411,8 @@ def analyse(config: Mapping[str, Any], reader: ExportReader) -> dict[str, Any]:
                           }}, "results": results}
 
 
-def write_outputs(result: Mapping[str, Any], output_dir: Path, config: Mapping[str, Any]) -> None:
+def write_outputs(result: Mapping[str, Any], output_dir: Path, config: Mapping[str, Any]) -> Path:
+    output_dir = next_run_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     groups = {"significant_positive": "significant_positive.csv", "significant_negative": "significant_negative.csv", "not_significant": "not_significant.csv"}
     rows = result["results"]
@@ -370,6 +429,25 @@ def write_outputs(result: Mapping[str, Any], output_dir: Path, config: Mapping[s
     full = dict(result)
     full["config"] = dict(config)
     (output_dir / "lifestyle_sleep_analysis.json").write_text(json.dumps(full, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return output_dir
+
+
+def next_run_output_dir(base_dir: Path) -> Path:
+    """Create a unique YYYY-MM-DD_Analysis_N directory below the output root."""
+    base_dir = Path(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    run_date = datetime.now().strftime("%Y-%m-%d")
+    pattern = re.compile(rf"^{re.escape(run_date)}_Analysis_(\d+)$", re.IGNORECASE)
+    used = [int(match.group(1)) for child in base_dir.iterdir() if child.is_dir() and (match := pattern.match(child.name))]
+    return base_dir / f"{run_date}_Analysis_{max(used, default=0) + 1}"
+
+
+def resolve_output_dir(config_path: Path, configured_dir: str) -> Path:
+    output_dir = Path(configured_dir)
+    if (not output_dir.is_absolute() and Path.cwd().name.lower() == config_path.parent.name.lower()
+            and output_dir.parts and output_dir.parts[0].lower() == config_path.parent.name.lower()):
+        return config_path.parent.parent.joinpath(*output_dir.parts[1:])
+    return output_dir
 
 
 def main() -> int:
@@ -386,8 +464,9 @@ def main() -> int:
     reader = ExportReader(input_path, sleep_input)
     try:
         result = analyse(config, reader)
-        write_outputs(result, Path(config.get("output_dir", "LifestyleLoggingAnalysis/Out")), config)
+        output_path = write_outputs(result, resolve_output_dir(Path(args.config).resolve(), config.get("output_dir", "LifestyleLoggingAnalysis/Out")), config)
         print(f"Analysed {len(result['results'])} activity/metric combinations")
+        print(f"Results written to {output_path}")
     finally:
         reader.close()
     return 0

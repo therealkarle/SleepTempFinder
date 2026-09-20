@@ -52,11 +52,14 @@ class LifestyleSleepAnalysisTests(unittest.TestCase):
         reader = ExportReader(archive)
         result = analyse(self.config(), reader)
         output = Path(self.temp.name) / "out"
-        write_outputs(result, output, self.config())
-        self.assertTrue((output / "significant_positive.csv").exists())
-        self.assertTrue((output / "significant_negative.csv").exists())
-        self.assertTrue((output / "not_significant.csv").exists())
-        self.assertTrue((output / "lifestyle_sleep_analysis.json").exists())
+        run_output = write_outputs(result, output, self.config())
+        self.assertRegex(run_output.name, r"^\d{4}-\d{2}-\d{2}_Analysis_1$")
+        self.assertTrue((run_output / "significant_positive.csv").exists())
+        self.assertTrue((run_output / "significant_negative.csv").exists())
+        self.assertTrue((run_output / "not_significant.csv").exists())
+        self.assertTrue((run_output / "lifestyle_sleep_analysis.json").exists())
+        second_output = write_outputs(result, output, self.config())
+        self.assertRegex(second_output.name, r"^\d{4}-\d{2}-\d{2}_Analysis_2$")
         reader.close()
 
     def test_direct_lifestyle_file_with_separate_sleep_input(self):
@@ -64,6 +67,23 @@ class LifestyleSleepAnalysisTests(unittest.TestCase):
         reader = ExportReader(lifestyle_file, self.root)
         result = analyse(self.config(), reader)
         self.assertTrue(result["results"])
+        reader.close()
+
+    def test_sleep_json_import(self):
+        sleep_file = self.root / "DI_CONNECT" / "DI-Connect-Wellness" / "2026-01-01_2026-01-03_123_sleepData.json"
+        sleep_file.write_text(json.dumps([
+            {"calendarDate": "2026-01-01", "sleepScores": {"overallScore": 90},
+             "deepSleepSeconds": 7200, "lightSleepSeconds": 10800, "remSleepSeconds": 3600},
+            {"calendarDate": "2026-01-02", "sleepScores": {"overallScore": 70},
+             "deepSleepSeconds": 5400, "lightSleepSeconds": 9000, "remSleepSeconds": 3600},
+        ]), encoding="utf-8")
+        reader = ExportReader(self.root)
+        result = analyse(self.config(), reader)
+        walk_score = next(r for r in result["results"] if r["activity"] == "Walk" and r["metric"] == "Sleep_Score")
+        self.assertEqual(walk_score["done_n"], 1)
+        self.assertEqual(walk_score["done_mean"], 90)
+        walk_duration = next(r for r in result["results"] if r["activity"] == "Walk" and r["metric"] == "Sleep_Duration")
+        self.assertEqual(walk_duration["done_mean"], 6)
         reader.close()
 
 

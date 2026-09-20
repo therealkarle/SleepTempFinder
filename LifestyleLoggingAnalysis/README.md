@@ -49,7 +49,9 @@ python LifestyleLoggingAnalysis/lifestyle_sleep_analysis.py \
   --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
 ```
 
-The result directory contains `significant_positive.csv`,
+Each run creates a separate directory below the configured output directory,
+named `YYYY-MM-DD_Analysis_N`. The counter increases when multiple analyses
+run on the same day. Each run directory contains `significant_positive.csv`,
 `significant_negative.csv`, `not_significant.csv`, and
 `lifestyle_sleep_analysis.json`. The delta is always `mean(done) -
 mean(not_done)`. The test is a two-sided Welch t-test; all confidence,

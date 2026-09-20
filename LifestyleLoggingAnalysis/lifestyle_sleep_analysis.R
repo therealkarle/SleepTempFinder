@@ -260,7 +260,29 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
   list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)"), results = results)
 }
 
+next_run_output_dir <- function(base_dir) {
+  dir.create(base_dir, recursive = TRUE, showWarnings = FALSE)
+  run_date <- format(Sys.Date(), "%Y-%m-%d")
+  pattern <- paste0("^", run_date, "_Analysis_([0-9]+)$")
+  existing <- list.dirs(base_dir, full.names = FALSE, recursive = FALSE)
+  matching <- grep(pattern, existing, value = TRUE)
+  used <- if (length(matching)) as.integer(sub(pattern, "\\1", matching)) else integer()
+  file.path(base_dir, paste0(run_date, "_Analysis_", max(c(0L, used)) + 1L))
+}
+
+resolve_output_dir <- function(config_path, configured_dir) {
+  if (!grepl("^([A-Za-z]:[\\\\/]|/)", configured_dir)) {
+    config_dir <- basename(dirname(config_path))
+    if (identical(tolower(basename(getwd())), tolower(config_dir)) &&
+        startsWith(tolower(configured_dir), paste0(tolower(config_dir), "/"))) {
+      return(file.path(dirname(dirname(config_path)), sub("^[^/]+/", "", configured_dir)))
+    }
+  }
+  configured_dir
+}
+
 write_outputs <- function(result, output_dir, config) {
+  output_dir <- next_run_output_dir(output_dir)
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   progress("[Lifestyle] Writing results to: ", normalizePath(output_dir, mustWork = FALSE))
   for (classification in c("significant_positive", "significant_negative", "not_significant")) {
@@ -272,6 +294,7 @@ write_outputs <- function(result, output_dir, config) {
     utils::write.csv(frame, file.path(output_dir, paste0(classification, ".csv")), row.names = FALSE, na = "")
   }
   result$config <- config; jsonlite::write_json(result, file.path(output_dir, "lifestyle_sleep_analysis.json"), auto_unbox = TRUE, pretty = TRUE, na = "null")
+  invisible(output_dir)
 }
 
 script_directory <- function() {
@@ -306,7 +329,8 @@ run_lifestyle_analysis <- function(config_path = NULL, input_override = NULL, sl
     if (sleep_source$cleanup && !identical(sleep_source$root, lifestyle_source$root)) unlink(sleep_source$root, recursive = TRUE)
   }, add = TRUE)
   result <- analyse(config, lifestyle_source, sleep_source)
-  write_outputs(result, config$output_dir %||% "LifestyleLoggingAnalysis/Out", config)
+  output_dir <- resolve_output_dir(config_path, config$output_dir %||% "LifestyleLoggingAnalysis/Out")
+  write_outputs(result, output_dir, config)
   progress("[Lifestyle] Analysed ", length(result$results), " activity/metric combinations")
   invisible(result)
 }
