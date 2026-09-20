@@ -1,0 +1,33 @@
+# Independent Garmin LifestyleLogging/sleep analysis configuration.
+start_date: "2026-01-01"
+end_date: "2026-12-31"
+output_dir: "LifestyleLoggingAnalysis/Out"
+
+# Include dates where an activity is absent as a negative observation.
+missing_activity_is_no: true
+missing_activity_is_no_by_activity:
+  Meditation: false
+
+# Optional. Without this list all activities found in LifestyleLogging.json are used.
+activities: []
+excluded_activities:
+  - Example activity to exclude
+
+# Either a list of known metric names or a mapping to source-column aliases.
+sleep_metrics:
+  Sleep_Score:
+    - Score
+    - Sleep Score
+  Sleep_Duration:
+    - Dauer
+    - Sleep Duration
+  HRV:
+    - HFV-Status
+    - HRV
+  RHR:
+    - Ruheherzfrequenz
+    - Resting Heart Rate
+
+value_interval: 0.80
+confidence_level: 0.95
+significance_level: 0.05
