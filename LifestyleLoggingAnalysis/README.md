@@ -25,7 +25,8 @@ python LifestyleLoggingAnalysis/lifestyle_sleep_analysis.py \
   --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
 ```
 
-The same analysis is available as an R script. It requires the R packages
+The same analysis is available as an R script. It accepts Garmin
+`*_sleepData.json` files as well as sleep CSV files and requires the R packages
 `yaml` and `jsonlite` and uses the same YAML configuration and output files:
 
 ```sh

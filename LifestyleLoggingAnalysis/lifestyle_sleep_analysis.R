@@ -113,6 +113,61 @@ read_csv_flexible <- function(path) {
   tryCatch(utils::read.csv(path, sep = separator, check.names = FALSE, stringsAsFactors = FALSE, fileEncoding = "UTF-8-BOM"), error = function(e) NULL)
 }
 
+json_named_value <- function(value, aliases) {
+  if (!is.list(value)) return(NULL)
+  wanted <- norm(aliases)
+  for (name in names(value)) {
+    if (norm(name) %in% wanted && !is.list(value[[name]])) return(value[[name]])
+  }
+  for (child in value) {
+    found <- json_named_value(child, aliases)
+    if (!is.null(found)) return(found)
+  }
+  NULL
+}
+
+sleep_json_value <- function(entry, metric, aliases) {
+  value <- json_named_value(entry, aliases)
+  if (!is.null(value)) {
+    return(if (metric == "Sleep_Duration") duration_to_hours(value) else parse_number(value))
+  }
+  if (metric == "Sleep_Score") {
+    value <- json_named_value(entry$sleepScores %||% list(), c("overallScore", "overall sleep score"))
+    return(parse_number(value))
+  }
+  if (metric == "Sleep_Duration") {
+    stages <- c(entry$deepSleepSeconds, entry$lightSleepSeconds, entry$remSleepSeconds)
+    if (length(stages) == 3 && all(!vapply(stages, is.null, logical(1)))) {
+      seconds <- suppressWarnings(sum(as.numeric(unlist(stages)), na.rm = TRUE))
+      if (is.finite(seconds) && seconds > 0) return(seconds / 3600)
+    }
+  }
+  NA_real_
+}
+
+sleep_rows_json <- function(materialized, specs) {
+  json_files <- source_files(materialized, "_sleepData\\.json$")
+  if (!length(json_files)) return(list())
+  progress("[Lifestyle] Reading ", length(json_files), " sleep JSON file(s)...")
+  result <- list()
+  for (path in json_files) {
+    progress("[Lifestyle] Reading sleep file: ", path)
+    payload <- tryCatch(read_json(path), error = function(e) NULL)
+    if (!is.list(payload)) next
+    for (entry in payload) {
+      if (!is.list(entry)) next
+      day <- parse_date(entry$calendarDate %||% entry$date)
+      if (is.na(day)) next
+      key <- as.character(day); if (is.null(result[[key]])) result[[key]] <- list()
+      for (metric in names(specs)) {
+        value <- sleep_json_value(entry, metric, specs[[metric]])
+        if (!is.na(value) && is.null(result[[key]][[metric]])) result[[key]][[metric]] <- value
+      }
+    }
+  }
+  result
+}
+
 metric_specs <- function(config) {
   configured <- config$sleep_metrics %||% names(DEFAULT_METRICS)
   if (is.list(configured) && !is.null(names(configured))) return(lapply(configured, function(x) as.character(unlist(x))))
@@ -120,10 +175,11 @@ metric_specs <- function(config) {
 }
 
 sleep_rows <- function(materialized, specs) {
-  result <- list()
+  result <- sleep_rows_json(materialized, specs)
   csv_files <- source_files(materialized, "\\.csv$")
-  progress("[Lifestyle] Reading ", length(csv_files), " sleep CSV file(s)...")
+  if (!length(result)) progress("[Lifestyle] Reading ", length(csv_files), " sleep CSV file(s)...")
   for (path in csv_files) {
+    if (length(result) && grepl("INREACH", path, ignore.case = TRUE)) next
     progress("[Lifestyle] Reading sleep file: ", path)
     data <- read_csv_flexible(path); if (is.null(data) || !nrow(data)) next
     date_candidates <- names(data)[norm(names(data)) %in% c("date", "datum", "sleep score 4 wochen", "sleep date", "calendar date")]
@@ -141,7 +197,7 @@ sleep_rows <- function(materialized, specs) {
       }
     }
   }
-  if (!length(result)) stop("No compatible Garmin sleep CSV found. Provide a Garmin export folder/ZIP or sleep_input.")
+  if (!length(result)) stop("No compatible Garmin sleep JSON or CSV found. Provide a Garmin export folder/ZIP or sleep_input.")
   progress("[Lifestyle] Sleep dates loaded: ", length(result))
   result
 }
