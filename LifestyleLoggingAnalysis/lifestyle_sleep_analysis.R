@@ -189,14 +189,49 @@ write_outputs <- function(result, output_dir, config) {
   result$config <- config; jsonlite::write_json(result, file.path(output_dir, "lifestyle_sleep_analysis.json"), auto_unbox = TRUE, pretty = TRUE, na = "null")
 }
 
+script_directory <- function() {
+  files <- vapply(sys.frames(), function(frame) if (!is.null(frame$ofile)) frame$ofile else "", character(1))
+  files <- files[nzchar(files)]
+  if (length(files)) dirname(normalizePath(tail(files, 1))) else getwd()
+}
+
+find_config <- function(config_path = NULL) {
+  if (!is.null(config_path) && nzchar(config_path)) return(config_path)
+  candidates <- unique(c(
+    file.path(script_directory(), "GarminLifestyleAnalysisConfig.yaml"),
+    file.path(getwd(), "GarminLifestyleAnalysisConfig.yaml"),
+    file.path(getwd(), "LifestyleLoggingAnalysis", "GarminLifestyleAnalysisConfig.yaml")
+  ))
+  found <- candidates[file.exists(candidates)]
+  if (length(found)) return(found[1])
+  stop("No GarminLifestyleAnalysisConfig.yaml found. Searched:\n", paste(candidates, collapse = "\n"))
+}
+
+run_lifestyle_analysis <- function(config_path = NULL, input_override = NULL, sleep_input_override = NULL) {
+  config_path <- find_config(config_path)
+  config <- yaml::read_yaml(config_path)
+  input_path <- input_override %||% config$input_path
+  sleep_input <- sleep_input_override %||% config$sleep_input
+  if (is.null(input_path) || !nzchar(input_path)) stop("Set input_path in the config or provide input_override")
+  if (is.null(sleep_input) || !nzchar(sleep_input)) sleep_input <- input_path
+  lifestyle_source <- materialize_source(input_path); sleep_source <- materialize_source(sleep_input)
+  on.exit({
+    if (lifestyle_source$cleanup) unlink(lifestyle_source$root, recursive = TRUE)
+    if (sleep_source$cleanup && !identical(sleep_source$root, lifestyle_source$root)) unlink(sleep_source$root, recursive = TRUE)
+  }, add = TRUE)
+  result <- analyse(config, lifestyle_source, sleep_source)
+  write_outputs(result, config$output_dir %||% "LifestyleLoggingAnalysis/Out", config)
+  cat("Analysed", length(result$results), "activity/metric combinations\n")
+  invisible(result)
+}
+
 args <- commandArgs(trailingOnly = TRUE)
 get_arg <- function(name) { i <- match(name, args); if (is.na(i) || i == length(args)) NULL else args[i + 1] }
-config_path <- get_arg("--config") %||% get_arg("-c")
-if (is.null(config_path)) stop("Usage: Rscript lifestyle_sleep_analysis.R --config <config.yaml> [--input <path>] [--sleep-input <path>]")
-config <- yaml::read_yaml(config_path); input_path <- get_arg("--input") %||% config$input_path; sleep_input <- get_arg("--sleep-input") %||% config$sleep_input
-if (is.null(input_path) || !nzchar(input_path)) stop("Set input_path in the config or provide --input")
-if (is.null(sleep_input) || !nzchar(sleep_input)) sleep_input <- input_path
-lifestyle_source <- materialize_source(input_path); sleep_source <- materialize_source(sleep_input)
-on.exit({ if (lifestyle_source$cleanup) unlink(lifestyle_source$root, recursive = TRUE); if (sleep_source$cleanup && !identical(sleep_source$root, lifestyle_source$root)) unlink(sleep_source$root, recursive = TRUE) }, add = TRUE)
-result <- analyse(config, lifestyle_source, sleep_source); write_outputs(result, config$output_dir %||% "LifestyleLoggingAnalysis/Out", config)
-cat("Analysed", length(result$results), "activity/metric combinations\n")
+
+if (interactive()) {
+  # Running the file with RStudio's Source button uses the automatically found config.
+  run_lifestyle_analysis()
+} else {
+  config_arg <- get_arg("--config") %||% get_arg("-c")
+  run_lifestyle_analysis(config_arg, get_arg("--input"), get_arg("--sleep-input"))
+}

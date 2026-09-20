@@ -33,6 +33,14 @@ Rscript LifestyleLoggingAnalysis/lifestyle_sleep_analysis.R \
   --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
 ```
 
+In RStudio, the file can also be run with **Source**. The script then searches
+automatically for `GarminLifestyleAnalysisConfig.yaml` next to the script or
+in the project directory:
+
+```r
+source("LifestyleLoggingAnalysis/lifestyle_sleep_analysis.R")
+```
+
 If the sleep CSV files are stored elsewhere, set `sleep_input` in the config:
 
 ```sh
