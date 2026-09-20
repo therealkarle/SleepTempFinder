@@ -329,6 +329,16 @@ write_outputs <- function(result, output_dir, config) {
     significant_negative = "all_significant_negative",
     not_significant = "all_not_significant"
   )
+
+  # Write one combined export containing every activity/metric result.
+  all_results <- result_frame(result$results, "all")
+  utils::write.csv(
+    all_results,
+    file.path(output_dir, "all.csv"),
+    row.names = FALSE,
+    na = ""
+  )
+
   for (classification in classifications) {
     selected <- Filter(function(x) identical(x$classification, classification), result$results)
     utils::write.csv(
