@@ -6,8 +6,8 @@
 normalize_sleep_source_mode <- function(mode) {
   mode <- tolower(trimws(as.character(mode %||% "csv")))
   if (mode == "sleepscorebattle") mode <- "api"
-  if (!mode %in% c("csv", "api", "garmin", "combined")) {
-    stop(sprintf("Invalid sleep_source.mode '%s'; expected 'csv', 'api', 'garmin', or 'combined'.", mode))
+  if (!mode %in% c("csv", "api", "garmin", "garmin_local", "combined")) {
+    stop(sprintf("Invalid sleep_source.mode '%s'; expected 'csv', 'api', 'garmin', 'garmin_local', or 'combined'.", mode))
   }
   mode
 }

@@ -285,6 +285,29 @@ If you want, this README can also be extended with a dedicated CSV column refere
 ## Sleep Source
 
 - Default mode is `garmin` and uses the read-only `python-garminconnect` wrapper.
+- Set `sleep_source.mode: garmin_local` to read the complete history from a local
+  `garmin-local-mcp` SQLite warehouse without contacting Garmin or writing to the
+  warehouse. Configure the path in `sleep_source.garmin_local.db_path`, for example:
+
+  ```yaml
+  sleep_source:
+    mode: "garmin_local"
+    garmin_local:
+      db_path: "C:/Users/flori/.garmin-mcp/garmin.db"
+  ```
+
+- `garmin_local` always loads the complete database history. The configured
+  `sleep_source.query.days`, `date_start`, and `date_end` values are not used for
+  database loading; later analysis filters still apply normally.
+- SleepTempFinder opens the database with SQLite read-only mode and
+  `PRAGMA query_only = ON`. It never runs Garmin Local MCP migrations or syncs.
+- To explicitly backfill the warehouse, run the upstream command separately and
+  rerun SleepTempFinder afterwards:
+
+  ```text
+  garmin-local-mcp sync --from 2026-01-01
+  ```
+
 - Set `sleep_source.mode: csv` to use local Garmin CSV exports.
 - Set `sleep_source.mode: api` or `sleepscorebattle` to fetch SleepScoreBattle data.
 - Set `sleep_source.mode: garmin` to fetch Garmin Connect data through the Python bridge.

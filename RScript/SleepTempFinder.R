@@ -180,6 +180,7 @@ sleep_source_priority <- normalize_sleep_source_priority(sleep_source_cfg$priori
 sleep_source_uses_csv <- sleep_source_mode %in% c("csv", "combined")
 sleep_source_uses_api <- sleep_source_mode %in% c("api", "combined")
 sleep_source_uses_garmin <- sleep_source_mode %in% c("garmin")
+sleep_source_uses_garmin_local <- sleep_source_mode %in% c("garmin_local")
 sleep_api_cfg <- sleep_source_cfg$sleepscorebattle %||% sleep_source_cfg$api %||% list()
 sleep_api_base_url <- trimws(as.character(sleep_api_cfg$base_url %||% ""))
 if (nzchar(sleep_api_base_url)) {
@@ -205,6 +206,10 @@ garmin_lifestyle_output_dir <- path.expand(as.character(
   garmin_cfg$lifestyle_logging$output_dir %||% file.path(garmin_cache_dir, "lifestyle_logging")
 ))
 garmin_metrics <- garmin_metrics[nzchar(garmin_metrics)]
+
+garmin_local_cfg <- sleep_source_cfg$garmin_local %||% list()
+garmin_local_bridge_path <- file.path(script_directory, "..", "GarminConnectBridge", "garmin_local_bridge.py")
+garmin_local_db_path <- path.expand(as.character(garmin_local_cfg$db_path %||% ""))
 sleep_scb_enabled <- isTRUE(sleep_source_cfg$sleepscorebattle$enabled %||% FALSE)
 
 normalize_api_name <- function(x) {
@@ -635,6 +640,59 @@ read_garmin_bridge <- function(date_start, date_end) {
       Source_File = paste0("garmin://", format(as.Date(date_start), "%Y-%m-%d"), "_", format(as.Date(date_end), "%Y-%m-%d")),
       Source_Name = "Garmin Connect API",
       Sleep_Source = "garmin"
+    )
+  rows
+}
+
+read_garmin_local_bridge <- function() {
+  if (!file.exists(garmin_local_bridge_path)) {
+    stop("Garmin Local MCP bridge not found: ", garmin_local_bridge_path)
+  }
+  if (!nzchar(garmin_local_db_path)) {
+    stop("sleep_source.garmin_local.db_path must be configured when mode is 'garmin_local'.")
+  }
+  if (!file.exists(garmin_local_db_path)) {
+    stop("Garmin Local MCP database not found: ", garmin_local_db_path)
+  }
+
+  python_bin <- Sys.getenv("PYTHON", unset = "python")
+  bridge_output <- tempfile("garmin-local-result-", fileext = ".json")
+  bridge_stderr <- tempfile("garmin-local-bridge-", fileext = ".log")
+  on.exit(unlink(c(bridge_output, bridge_stderr)), add = TRUE)
+  args <- c(
+    garmin_local_bridge_path,
+    "--db-path", garmin_local_db_path,
+    "--output", bridge_output
+  )
+  output <- system2(python_bin, args = args, stdout = TRUE, stderr = bridge_stderr)
+  bridge_messages <- if (file.exists(bridge_stderr)) {
+    readLines(bridge_stderr, warn = FALSE, encoding = "UTF-8")
+  } else {
+    character(0)
+  }
+  if (length(output) > 0) cat(paste(output, collapse = "\n"), "\n")
+  if (length(bridge_messages) > 0) cat(paste(bridge_messages, collapse = "\n"), "\n")
+  status <- attr(output, "status") %||% 0L
+  if (!identical(as.integer(status), 0L)) {
+    stop("Garmin Local MCP bridge failed:\n", paste(c(bridge_messages, output), collapse = "\n"))
+  }
+  if (!file.exists(bridge_output)) {
+    stop("Garmin Local MCP bridge did not produce a result file.")
+  }
+  payload <- tryCatch(
+    jsonlite::fromJSON(paste(readLines(bridge_output, warn = FALSE, encoding = "UTF-8"), collapse = "\n"), flatten = TRUE),
+    error = function(e) stop("Failed to parse Garmin Local MCP bridge response: ", conditionMessage(e))
+  )
+  rows <- as_tibble(payload, .name_repair = "unique")
+  if (nrow(rows) == 0) stop("Garmin Local MCP database contains no sleep rows.")
+  rows <- rows %>%
+    mutate(
+      Date = as.Date(Date),
+      bedtime = parse_datetime_safe(bedtime, type = "garmin_datetime"),
+      waketime = parse_datetime_safe(waketime, type = "garmin_datetime"),
+      Source_File = "garmin-local://garmin.db",
+      Source_Name = "Garmin Local MCP SQLite warehouse",
+      Sleep_Source = "garmin_local"
     )
   rows
 }
@@ -2275,25 +2333,33 @@ all_sensor_files <- classification$all_sensor_files
 
  mapping <- config$column_names
 
- # Direct `source()` runs still need an API query window. Use an optional
- # configured range, defaulting to the last 365 days through today.
- sleep_query_cfg <- sleep_source_cfg$query %||% list()
- query_start_value <- trimws(as.character(sleep_query_cfg$date_start %||% ""))
- query_end_value <- trimws(as.character(sleep_query_cfg$date_end %||% ""))
- query_days <- suppressWarnings(as.integer(sleep_query_cfg$days %||% 30L))
- if (is.na(query_days) || query_days < 1L) query_days <- 30L
- start_date <- if (nzchar(query_start_value)) as.Date(query_start_value) else Sys.Date() - lubridate::days(query_days - 1L)
- end_date <- if (nzchar(query_end_value)) as.Date(query_end_value) else Sys.Date()
- if (is.na(start_date) || is.na(end_date) || end_date < start_date) {
-   stop("Invalid sleep_source.query.date_start/date_end; expected YYYY-MM-DD with date_end >= date_start.")
+ # Direct `source()` runs need an API query window. Garmin Local MCP is
+ # different: it always reads the complete database, so query.* is ignored.
+ if (sleep_source_uses_garmin_local) {
+   start_date <- NULL
+   end_date <- NULL
+   cat("Garmin Local MCP source: loading the complete SQLite history (no database date filter)\n")
+ } else {
+   sleep_query_cfg <- sleep_source_cfg$query %||% list()
+   query_start_value <- trimws(as.character(sleep_query_cfg$date_start %||% ""))
+   query_end_value <- trimws(as.character(sleep_query_cfg$date_end %||% ""))
+   query_days <- suppressWarnings(as.integer(sleep_query_cfg$days %||% 30L))
+   if (is.na(query_days) || query_days < 1L) query_days <- 30L
+   start_date <- if (nzchar(query_start_value)) as.Date(query_start_value) else Sys.Date() - lubridate::days(query_days - 1L)
+   end_date <- if (nzchar(query_end_value)) as.Date(query_end_value) else Sys.Date()
+   if (is.na(start_date) || is.na(end_date) || end_date < start_date) {
+     stop("Invalid sleep_source.query.date_start/date_end; expected YYYY-MM-DD with date_end >= date_start.")
+   }
+   cat(sprintf("Sleep API query window: %s -> %s (%d days)\n", start_date, end_date, as.integer(end_date - start_date) + 1L))
  }
- cat(sprintf("Sleep API query window: %s -> %s (%d days)\n", start_date, end_date, as.integer(end_date - start_date) + 1L))
 
 # read sleep data, track source file and canonical name per row
 sleep_df_raw <- if (sleep_source_mode == "api") {
   read_sleep_api(mapping)
 } else if (sleep_source_mode == "garmin") {
   read_garmin_bridge(start_date, end_date)
+} else if (sleep_source_mode == "garmin_local") {
+  read_garmin_local_bridge()
 } else {
 read_sleep_file <- function(f) {
   df <- read_garmin_fixed(f)
@@ -2659,7 +2725,8 @@ sleep_complete <- {
 if (!"Sleep_Source" %in% names(sleep_complete)) {
   sleep_complete$Sleep_Source <- ifelse(
     startsWith(as.character(sleep_complete$Source_File), "api://"), "api",
-    ifelse(startsWith(as.character(sleep_complete$Source_File), "garmin://"), "garmin", "csv")
+    ifelse(startsWith(as.character(sleep_complete$Source_File), "garmin://"), "garmin",
+      ifelse(startsWith(as.character(sleep_complete$Source_File), "garmin-local://"), "garmin_local", "csv"))
   )
 }
 
