@@ -43,6 +43,8 @@ PlotOutput/
 #PrivatData
 GarminUserData/
 LifestyleLoggingExtractor/Out/
+LifestyleLoggingAnalysis/Out/
+LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
 ChronometerUserData/
 /data
 LocalDocs/

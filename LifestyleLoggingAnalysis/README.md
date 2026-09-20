@@ -12,13 +12,17 @@ Install its dependencies once:
 python -m pip install -r LifestyleLoggingAnalysis/requirements.txt
 ```
 
-Copy `LifestyleLoggingAnalysis/config.example.yaml` to a private config and
-run:
+Use `LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml` for your
+personal dates, exclusions, metrics, and output settings. It is a copy of the
+template `GarminLifestyleAnalysisConfig.yaml.example` and is intentionally
+ignored by Git.
+
+Run the analysis with:
 
 ```sh
 python LifestyleLoggingAnalysis/lifestyle_sleep_analysis.py \
   --input GarminUserData/2026.01 \
-  --config LifestyleLoggingAnalysis/config.yaml
+  --config LifestyleLoggingAnalysis/GarminLifestyleAnalysisConfig.yaml
 ```
 
 The result directory contains `significant_positive.csv`,
