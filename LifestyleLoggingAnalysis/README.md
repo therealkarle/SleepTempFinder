@@ -56,8 +56,11 @@ files `all_significant_positive.csv`, `all_significant_negative.csv`, and
 `all_not_significant.csv`, plus three files per configured sleep metric. For
 example, `Sleep_Score_significant_positive.csv`,
 `Sleep_Score_significant_negative.csv`, and `Sleep_Score_not_significant.csv`.
-The JSON result is written to `lifestyle_sleep_analysis.json`. The delta is always `mean(done) -
-mean(not_done)`. The test is a two-sided Welch t-test; all confidence,
+The JSON result is written to `lifestyle_sleep_analysis.json`. Each result now
+separates `native_not_done_*` (an explicit logged negative) from
+`assumed_not_done_*` (the activity was missing and `missing_activity_is_no`
+enabled). `not_done_*` remains the combined compatibility group, and the delta
+is always `mean(done) - mean(not_done)`. The test is a two-sided Welch t-test; all confidence,
 significance, missing-activity, date, exclusion, and metric choices are in the
 YAML config. The script also prints a direct summary with the number and
 percentage of significant results (positive and negative combined) versus not

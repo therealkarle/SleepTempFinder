@@ -247,7 +247,7 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
     for (metric in names(specs)) {
     override_name <- names(overrides)[norm(names(overrides)) == norm(activity)][1]
     missing_no <- if (length(override_name) && !is.na(override_name)) isTRUE(overrides[[override_name]]) else missing_default
-    done_values <- not_done_values <- numeric()
+    done_values <- native_not_done_values <- assumed_not_done_values <- numeric()
     for (day in days) {
       # Iterating over a Date vector strips its Date class in base R, so
       # as.character(day) would produce the internal day number (e.g. 20349)
@@ -256,11 +256,27 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
       sleep_day_key <- sleep_key_for_lifestyle_day(day)
       value <- sleep[[sleep_day_key]][[metric]] %||% NA_real_; if (is.null(value) || is.na(value)) next
       status <- lifestyle[[lifestyle_day_key]][[activity]] %||% NA
-      if (is.na(status)) { if (!missing_no) next; status <- FALSE }
-      if (isTRUE(status)) done_values <- c(done_values, value) else not_done_values <- c(not_done_values, value)
+      if (is.na(status)) {
+        if (!missing_no) next
+        assumed_not_done_values <- c(assumed_not_done_values, value)
+      } else if (isTRUE(status)) {
+        done_values <- c(done_values, value)
+      } else {
+        native_not_done_values <- c(native_not_done_values, value)
+      }
     }
-    done <- group_stats(done_values, interval); not_done <- group_stats(not_done_values, interval)
-    row <- c(list(activity = activity, metric = metric, missing_activity_is_no = missing_no), setNames(done, paste0("done_", names(done))), setNames(not_done, paste0("not_done_", names(not_done))))
+    not_done_values <- c(native_not_done_values, assumed_not_done_values)
+    done <- group_stats(done_values, interval)
+    native_not_done <- group_stats(native_not_done_values, interval)
+    assumed_not_done <- group_stats(assumed_not_done_values, interval)
+    not_done <- group_stats(not_done_values, interval)
+    row <- c(
+      list(activity = activity, metric = metric, missing_activity_is_no = missing_no),
+      setNames(done, paste0("done_", names(done))),
+      setNames(native_not_done, paste0("native_not_done_", names(native_not_done))),
+      setNames(assumed_not_done, paste0("assumed_not_done_", names(assumed_not_done))),
+      setNames(not_done, paste0("not_done_", names(not_done)))
+    )
     delta <- p_value <- ci_low <- ci_high <- NULL
     if (length(done_values) >= 2 && length(not_done_values) >= 2) { delta <- mean(done_values) - mean(not_done_values); test <- stats::t.test(done_values, not_done_values, var.equal = FALSE); p_value <- unname(test$p.value); ci_low <- unname(test$conf.int[1]); ci_high <- unname(test$conf.int[2]) }
     significant <- !is.null(p_value) && p_value < alpha && !is.null(delta) && delta != 0
@@ -281,7 +297,7 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
   )
   progress("[Lifestyle] Statistical analysis finished: ", total_count, " activity/metric combinations")
   progress(sprintf("[Lifestyle] Significance: %d significant (%.1f%%), %d not significant (%.1f%%)", significant_count, significance_summary$significant_percent, not_significant_count, significance_summary$not_significant_percent))
-  list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)", significance_summary = significance_summary), results = results)
+  list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)", not_done_definition = "not_done = native_not_done + assumed_not_done; native_not_done is explicitly logged as false, assumed_not_done is missing and enabled by missing_activity_is_no", significance_summary = significance_summary), results = results)
 }
 
 next_run_output_dir <- function(base_dir) {
