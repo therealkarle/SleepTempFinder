@@ -15,6 +15,10 @@ DEFAULT_METRICS <- list(
 TRUE_VALUES <- c("true", "yes", "y", "1", "done", "completed", "complete", "ja", "gemacht")
 FALSE_VALUES <- c("false", "no", "n", "0", "not done", "not_done", "nicht gemacht", "nein")
 `%||%` <- function(x, y) if (is.null(x)) y else x
+progress <- function(...) {
+  cat(..., "\n", sep = "")
+  flush.console()
+}
 
 norm <- function(x) {
   x <- tolower(trimws(ifelse(is.na(x), "", as.character(x))))
@@ -83,12 +87,19 @@ lifestyle_rows <- function(payload) {
 
 materialize_source <- function(source) {
   source <- normalizePath(source, mustWork = TRUE)
-  if (dir.exists(source)) return(list(root = source, direct_json = NULL, cleanup = FALSE))
+  if (dir.exists(source)) {
+    progress("[Lifestyle] Using folder: ", source)
+    return(list(root = source, direct_json = NULL, cleanup = FALSE))
+  }
   if (grepl("\\.zip$", source, ignore.case = TRUE)) {
+    progress("[Lifestyle] Extracting ZIP: ", source)
     root <- tempfile("garmin_export_"); dir.create(root); utils::unzip(source, exdir = root)
     return(list(root = root, direct_json = NULL, cleanup = TRUE))
   }
-  if (grepl("LifestyleLogging\\.json$", source, ignore.case = TRUE)) return(list(root = NULL, direct_json = source, cleanup = FALSE))
+  if (grepl("LifestyleLogging\\.json$", source, ignore.case = TRUE)) {
+    progress("[Lifestyle] Using JSON: ", source)
+    return(list(root = NULL, direct_json = source, cleanup = FALSE))
+  }
   stop("Input must be a Garmin folder, ZIP archive, or LifestyleLogging.json: ", source)
 }
 
@@ -110,7 +121,10 @@ metric_specs <- function(config) {
 
 sleep_rows <- function(materialized, specs) {
   result <- list()
-  for (path in source_files(materialized, "\\.csv$")) {
+  csv_files <- source_files(materialized, "\\.csv$")
+  progress("[Lifestyle] Reading ", length(csv_files), " sleep CSV file(s)...")
+  for (path in csv_files) {
+    progress("[Lifestyle] Reading sleep file: ", path)
     data <- read_csv_flexible(path); if (is.null(data) || !nrow(data)) next
     date_candidates <- names(data)[norm(names(data)) %in% c("date", "datum", "sleep score 4 wochen", "sleep date", "calendar date")]
     if (!length(date_candidates)) next
@@ -128,6 +142,7 @@ sleep_rows <- function(materialized, specs) {
     }
   }
   if (!length(result)) stop("No compatible Garmin sleep CSV found. Provide a Garmin export folder/ZIP or sleep_input.")
+  progress("[Lifestyle] Sleep dates loaded: ", length(result))
   result
 }
 
@@ -138,24 +153,35 @@ group_stats <- function(values, interval) {
 }
 
 analyse <- function(config, lifestyle_materialized, sleep_materialized) {
+  progress("[Lifestyle] Starting analysis...")
   start <- parse_date(config$start_date); end <- parse_date(config$end_date)
   if (is.na(start) || is.na(end) || end < start) stop("Config requires valid start_date and end_date with end_date >= start_date")
   interval <- as.numeric(config$value_interval %||% 0.80); confidence <- as.numeric(config$confidence_level %||% 0.95); alpha <- as.numeric(config$significance_level %||% 0.05)
   if (!(interval > 0 && interval <= 1 && confidence > 0 && confidence < 1 && alpha > 0 && alpha < 1)) stop("Invalid interval, confidence_level, or significance_level")
   lifestyle_files <- if (!is.null(lifestyle_materialized$direct_json)) lifestyle_materialized$direct_json else source_files(lifestyle_materialized, "LifestyleLogging\\.json$")
   if (!length(lifestyle_files)) stop("No LifestyleLogging.json found in Garmin export")
+  progress("[Lifestyle] Reading ", length(lifestyle_files), " LifestyleLogging JSON file(s)...")
   lifestyle <- list()
-  for (path in lifestyle_files) for (key in names(lifestyle_rows(read_json(path)))) {
+  for (path in lifestyle_files) {
+    progress("[Lifestyle] Reading lifestyle file: ", path)
+    rows <- lifestyle_rows(read_json(path))
+    for (key in names(rows)) {
     if (is.null(lifestyle[[key]])) lifestyle[[key]] <- list()
-    entries <- lifestyle_rows(read_json(path))[[key]]
+    entries <- rows[[key]]
     for (activity in names(entries)) lifestyle[[key]][[activity]] <- isTRUE(lifestyle[[key]][[activity]]) || isTRUE(entries[[activity]])
+    }
   }
   specs <- metric_specs(config); sleep <- sleep_rows(sleep_materialized, specs)
   excluded <- norm(unlist(config$excluded_activities %||% list())); configured <- as.character(unlist(config$activities %||% list()))
   found <- unique(unlist(lapply(lifestyle, names))); activities <- unique(c(configured, found)); activities <- activities[!norm(activities) %in% excluded]
+  progress("[Lifestyle] Activities to analyse: ", length(activities), "; metrics: ", length(specs))
   missing_default <- isTRUE(config$missing_activity_is_no %||% TRUE); overrides <- config$missing_activity_is_no_by_activity %||% list()
   days <- seq.Date(start, end, by = "day"); results <- list(); index <- 1
-  for (activity in sort(activities)) for (metric in names(specs)) {
+  sorted_activities <- sort(activities)
+  for (activity_index in seq_along(sorted_activities)) {
+    activity <- sorted_activities[activity_index]
+    progress("[Lifestyle] Activity ", activity_index, "/", length(sorted_activities), ": ", activity)
+    for (metric in names(specs)) {
     override_name <- names(overrides)[norm(names(overrides)) == norm(activity)][1]
     missing_no <- if (length(override_name) && !is.na(override_name)) isTRUE(overrides[[override_name]]) else missing_default
     done_values <- not_done_values <- numeric()
@@ -172,12 +198,15 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
     significant <- !is.null(p_value) && p_value < alpha && !is.null(delta) && delta != 0
     classification <- if (significant && delta > 0) "significant_positive" else if (significant && delta < 0) "significant_negative" else "not_significant"
     results[[index]] <- c(row, list(delta = delta, delta_ci_low = ci_low, delta_ci_high = ci_high, p_value = p_value, significant = significant, classification = classification)); index <- index + 1
+    }
   }
+  progress("[Lifestyle] Statistical analysis finished: ", length(results), " activity/metric combinations")
   list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)"), results = results)
 }
 
 write_outputs <- function(result, output_dir, config) {
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  progress("[Lifestyle] Writing results to: ", normalizePath(output_dir, mustWork = FALSE))
   for (classification in c("significant_positive", "significant_negative", "not_significant")) {
     selected <- Filter(function(x) identical(x$classification, classification), result$results)
     if (length(selected)) {
@@ -209,6 +238,7 @@ find_config <- function(config_path = NULL) {
 
 run_lifestyle_analysis <- function(config_path = NULL, input_override = NULL, sleep_input_override = NULL) {
   config_path <- find_config(config_path)
+  progress("[Lifestyle] Config: ", normalizePath(config_path, mustWork = TRUE))
   config <- yaml::read_yaml(config_path)
   input_path <- input_override %||% config$input_path
   sleep_input <- sleep_input_override %||% config$sleep_input
@@ -221,15 +251,17 @@ run_lifestyle_analysis <- function(config_path = NULL, input_override = NULL, sl
   }, add = TRUE)
   result <- analyse(config, lifestyle_source, sleep_source)
   write_outputs(result, config$output_dir %||% "LifestyleLoggingAnalysis/Out", config)
-  cat("Analysed", length(result$results), "activity/metric combinations\n")
+  progress("[Lifestyle] Analysed ", length(result$results), " activity/metric combinations")
   invisible(result)
 }
 
 args <- commandArgs(trailingOnly = TRUE)
 get_arg <- function(name) { i <- match(name, args); if (is.na(i) || i == length(args)) NULL else args[i + 1] }
 
-if (interactive()) {
-  # Running the file with RStudio's Source button uses the automatically found config.
+# With no command-line arguments, source() and plain Rscript both use automatic
+# config discovery. Explicit arguments keep the CLI behaviour unchanged.
+progress("[Lifestyle] Script loaded; preparing to run...")
+if (!length(args)) {
   run_lifestyle_analysis()
 } else {
   config_arg <- get_arg("--config") %||% get_arg("-c")
