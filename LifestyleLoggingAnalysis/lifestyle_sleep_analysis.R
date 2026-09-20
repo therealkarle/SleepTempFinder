@@ -313,11 +313,21 @@ write_outputs <- function(result, output_dir, config) {
     frame
   }
 
-  # Keep the historical all-metrics files for compatibility with existing
-  # consumers, and additionally write three files for every sleep metric.
+  # Write the all-metrics files with an explicit `all_` prefix so they cannot
+  # be confused with the per-metric exports written below.
+  all_metric_file_stems <- c(
+    significant_positive = "all_significant_positive",
+    significant_negative = "all_significant_negative",
+    not_significant = "all_not_significant"
+  )
   for (classification in classifications) {
     selected <- Filter(function(x) identical(x$classification, classification), result$results)
-    utils::write.csv(result_frame(selected, classification), file.path(output_dir, paste0(classification, ".csv")), row.names = FALSE, na = "")
+    utils::write.csv(
+      result_frame(selected, classification),
+      file.path(output_dir, paste0(all_metric_file_stems[[classification]], ".csv")),
+      row.names = FALSE,
+      na = ""
+    )
   }
 
   result_metrics <- vapply(result$results, function(x) as.character(x$metric %||% ""), character(1))

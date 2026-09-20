@@ -54,9 +54,9 @@ class LifestyleSleepAnalysisTests(unittest.TestCase):
         output = Path(self.temp.name) / "out"
         run_output = write_outputs(result, output, self.config())
         self.assertRegex(run_output.name, r"^\d{4}-\d{2}-\d{2}_Analysis_1$")
-        self.assertTrue((run_output / "significant_positive.csv").exists())
-        self.assertTrue((run_output / "significant_negative.csv").exists())
-        self.assertTrue((run_output / "not_significant.csv").exists())
+        self.assertTrue((run_output / "all_significant_positive.csv").exists())
+        self.assertTrue((run_output / "all_significant_negative.csv").exists())
+        self.assertTrue((run_output / "all_not_significant.csv").exists())
         self.assertTrue((run_output / "lifestyle_sleep_analysis.json").exists())
         second_output = write_outputs(result, output, self.config())
         self.assertRegex(second_output.name, r"^\d{4}-\d{2}-\d{2}_Analysis_2$")
