@@ -363,6 +363,14 @@ write_outputs <- function(result, output_dir, config) {
     metric <- metrics[[metric_index]]
     metric_results <- Filter(function(x) identical(as.character(x$metric %||% ""), metric), result$results)
     metric_stem <- metric_stems[[metric_index]]
+
+    utils::write.csv(
+      result_frame(metric_results, "all"),
+      file.path(output_dir, paste0(metric_stem, "_all.csv")),
+      row.names = FALSE,
+      na = ""
+    )
+
     for (classification in classifications) {
       selected <- Filter(function(x) identical(x$classification, classification), metric_results)
       utils::write.csv(
