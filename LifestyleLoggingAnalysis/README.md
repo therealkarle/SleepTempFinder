@@ -63,6 +63,11 @@ YAML config. The script also prints a direct summary with the number and
 percentage of significant results (positive and negative combined) versus not
 significant results. The same summary is stored in the JSON metadata.
 
+Date alignment follows the Garmin semantics: a LifestyleLogging entry belongs
+to its bedtime/start date, while Garmin assigns the corresponding sleep night
+to its wake-up date. Therefore, a lifestyle entry on `2026-01-01` is matched
+with the Garmin sleep record dated `2026-01-02`.
+
 Dieses kleine Python-Skript extrahiert das Garmin `LifestyleLogging.json` aus einem Garmin-Export und schreibt es als pivotierte CSV-Datei.
 
 ## Nutzung

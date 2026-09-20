@@ -20,6 +20,13 @@ progress <- function(...) {
   flush.console()
 }
 
+# Garmin assigns a sleep night to the day it ends (the wake-up day), while
+# LifestyleLogging assigns an entry to the day it starts (the bedtime day).
+# Keep this boundary explicit so both sources refer to the same night.
+sleep_key_for_lifestyle_day <- function(day) {
+  format(as.Date(day, origin = "1970-01-01") + 1, "%Y-%m-%d")
+}
+
 norm <- function(x) {
   x <- tolower(trimws(ifelse(is.na(x), "", as.character(x))))
   gsub(" +", " ", gsub("_", " ", x))
@@ -245,9 +252,10 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
       # Iterating over a Date vector strips its Date class in base R, so
       # as.character(day) would produce the internal day number (e.g. 20349)
       # instead of the ISO keys used by the imported JSON data.
-      day_key <- format(as.Date(day, origin = "1970-01-01"), "%Y-%m-%d")
-      value <- sleep[[day_key]][[metric]] %||% NA_real_; if (is.null(value) || is.na(value)) next
-      status <- lifestyle[[day_key]][[activity]] %||% NA
+      lifestyle_day_key <- format(as.Date(day, origin = "1970-01-01"), "%Y-%m-%d")
+      sleep_day_key <- sleep_key_for_lifestyle_day(day)
+      value <- sleep[[sleep_day_key]][[metric]] %||% NA_real_; if (is.null(value) || is.na(value)) next
+      status <- lifestyle[[lifestyle_day_key]][[activity]] %||% NA
       if (is.na(status)) { if (!missing_no) next; status <- FALSE }
       if (isTRUE(status)) done_values <- c(done_values, value) else not_done_values <- c(not_done_values, value)
     }
