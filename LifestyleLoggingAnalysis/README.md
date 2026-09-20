@@ -56,7 +56,9 @@ run on the same day. Each run directory contains `significant_positive.csv`,
 `lifestyle_sleep_analysis.json`. The delta is always `mean(done) -
 mean(not_done)`. The test is a two-sided Welch t-test; all confidence,
 significance, missing-activity, date, exclusion, and metric choices are in the
-YAML config.
+YAML config. The script also prints a direct summary with the number and
+percentage of significant results (positive and negative combined) versus not
+significant results. The same summary is stored in the JSON metadata.
 
 Dieses kleine Python-Skript extrahiert das Garmin `LifestyleLogging.json` aus einem Garmin-Export und schreibt es als pivotierte CSV-Datei.
 

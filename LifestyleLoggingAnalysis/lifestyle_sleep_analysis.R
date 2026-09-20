@@ -256,8 +256,20 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
     results[[index]] <- c(row, list(delta = delta, delta_ci_low = ci_low, delta_ci_high = ci_high, p_value = p_value, significant = significant, classification = classification)); index <- index + 1
     }
   }
-  progress("[Lifestyle] Statistical analysis finished: ", length(results), " activity/metric combinations")
-  list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)"), results = results)
+  classifications <- if (length(results)) vapply(results, function(x) as.character(x$classification %||% "not_significant"), character(1)) else character()
+  significant_count <- sum(classifications %in% c("significant_positive", "significant_negative"))
+  not_significant_count <- sum(classifications == "not_significant")
+  total_count <- length(classifications)
+  significance_summary <- list(
+    significant = significant_count,
+    not_significant = not_significant_count,
+    total = total_count,
+    significant_percent = if (total_count) 100 * significant_count / total_count else 0,
+    not_significant_percent = if (total_count) 100 * not_significant_count / total_count else 0
+  )
+  progress("[Lifestyle] Statistical analysis finished: ", total_count, " activity/metric combinations")
+  progress(sprintf("[Lifestyle] Significance: %d significant (%.1f%%), %d not significant (%.1f%%)", significant_count, significance_summary$significant_percent, not_significant_count, significance_summary$not_significant_percent))
+  list(metadata = list(start_date = as.character(start), end_date = as.character(end), value_interval = interval, confidence_level = confidence, significance_level = alpha, method = "Welch two-sample t-test", delta_definition = "mean(done) - mean(not_done)", significance_summary = significance_summary), results = results)
 }
 
 next_run_output_dir <- function(base_dir) {
