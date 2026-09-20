@@ -51,9 +51,12 @@ python LifestyleLoggingAnalysis/lifestyle_sleep_analysis.py \
 
 Each run creates a separate directory below the configured output directory,
 named `YYYY-MM-DD_Analysis_N`. The counter increases when multiple analyses
-run on the same day. Each run directory contains `significant_positive.csv`,
-`significant_negative.csv`, `not_significant.csv`, and
-`lifestyle_sleep_analysis.json`. The delta is always `mean(done) -
+run on the same day. Each run directory contains the historical all-metrics
+files `significant_positive.csv`, `significant_negative.csv`, and
+`not_significant.csv`, plus three files per configured sleep metric. For
+example, `Sleep_Score_significant_positive.csv`,
+`Sleep_Score_significant_negative.csv`, and `Sleep_Score_not_significant.csv`.
+The JSON result is written to `lifestyle_sleep_analysis.json`. The delta is always `mean(done) -
 mean(not_done)`. The test is a two-sided Welch t-test; all confidence,
 significance, missing-activity, date, exclusion, and metric choices are in the
 YAML config. The script also prints a direct summary with the number and

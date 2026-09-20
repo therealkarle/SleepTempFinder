@@ -297,13 +297,48 @@ write_outputs <- function(result, output_dir, config) {
   output_dir <- next_run_output_dir(output_dir)
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   progress("[Lifestyle] Writing results to: ", normalizePath(output_dir, mustWork = FALSE))
-  for (classification in c("significant_positive", "significant_negative", "not_significant")) {
-    selected <- Filter(function(x) identical(x$classification, classification), result$results)
+  classifications <- c("significant_positive", "significant_negative", "not_significant")
+  result_frame <- function(selected, classification) {
     if (length(selected)) {
       frame <- do.call(rbind, lapply(selected, function(x) as.data.frame(lapply(x, function(v) if (is.null(v)) NA else v), stringsAsFactors = FALSE)))
-      deltas <- as.numeric(frame$delta); frame <- frame[order(is.na(deltas), if (classification == "significant_negative") deltas else -deltas, na.last = TRUE), , drop = FALSE]
-    } else frame <- data.frame(activity = character(), metric = character())
-    utils::write.csv(frame, file.path(output_dir, paste0(classification, ".csv")), row.names = FALSE, na = "")
+      deltas <- as.numeric(frame$delta)
+      frame <- frame[order(is.na(deltas), if (classification == "significant_negative") deltas else -deltas, na.last = TRUE), , drop = FALSE]
+    } else {
+      frame <- data.frame(activity = character(), metric = character())
+    }
+    frame
+  }
+
+  # Keep the historical all-metrics files for compatibility with existing
+  # consumers, and additionally write three files for every sleep metric.
+  for (classification in classifications) {
+    selected <- Filter(function(x) identical(x$classification, classification), result$results)
+    utils::write.csv(result_frame(selected, classification), file.path(output_dir, paste0(classification, ".csv")), row.names = FALSE, na = "")
+  }
+
+  result_metrics <- vapply(result$results, function(x) as.character(x$metric %||% ""), character(1))
+  configured_metrics <- names(metric_specs(config))
+  metrics <- unique(c(configured_metrics, result_metrics))
+  metrics <- metrics[!is.na(metrics) & nzchar(metrics)]
+  safe_metric_name <- function(metric) {
+    stem <- gsub("[^A-Za-z0-9._-]+", "_", trimws(metric))
+    stem <- gsub("_+", "_", stem)
+    if (!nzchar(stem)) "metric" else stem
+  }
+  metric_stems <- make.unique(vapply(metrics, safe_metric_name, character(1)), sep = "_")
+  for (metric_index in seq_along(metrics)) {
+    metric <- metrics[[metric_index]]
+    metric_results <- Filter(function(x) identical(as.character(x$metric %||% ""), metric), result$results)
+    metric_stem <- metric_stems[[metric_index]]
+    for (classification in classifications) {
+      selected <- Filter(function(x) identical(x$classification, classification), metric_results)
+      utils::write.csv(
+        result_frame(selected, classification),
+        file.path(output_dir, paste0(metric_stem, "_", classification, ".csv")),
+        row.names = FALSE,
+        na = ""
+      )
+    }
   }
   result$config <- config; jsonlite::write_json(result, file.path(output_dir, "lifestyle_sleep_analysis.json"), auto_unbox = TRUE, pretty = TRUE, na = "null")
   invisible(output_dir)
