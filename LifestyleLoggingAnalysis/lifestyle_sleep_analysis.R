@@ -302,15 +302,24 @@ write_outputs <- function(result, output_dir, config) {
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   progress("[Lifestyle] Writing results to: ", normalizePath(output_dir, mustWork = FALSE))
   classifications <- c("significant_positive", "significant_negative", "not_significant")
+  result_columns <- if (length(result$results)) {
+    unique(unlist(lapply(result$results, names), use.names = FALSE))
+  } else {
+    character()
+  }
+  csv_columns <- c(
+    intersect(c("activity", "metric", "p_value", "delta"), result_columns),
+    setdiff(result_columns, c("activity", "metric", "p_value", "delta"))
+  )
   result_frame <- function(selected, classification) {
     if (length(selected)) {
       frame <- do.call(rbind, lapply(selected, function(x) as.data.frame(lapply(x, function(v) if (is.null(v)) NA else v), stringsAsFactors = FALSE)))
       deltas <- as.numeric(frame$delta)
       frame <- frame[order(is.na(deltas), if (classification == "significant_negative") deltas else -deltas, na.last = TRUE), , drop = FALSE]
     } else {
-      frame <- data.frame(activity = character(), metric = character())
+      frame <- as.data.frame(setNames(replicate(length(csv_columns), character(), simplify = FALSE), csv_columns), stringsAsFactors = FALSE)
     }
-    frame
+    frame[, csv_columns, drop = FALSE]
   }
 
   # Write the all-metrics files with an explicit `all_` prefix so they cannot
