@@ -242,8 +242,12 @@ analyse <- function(config, lifestyle_materialized, sleep_materialized) {
     missing_no <- if (length(override_name) && !is.na(override_name)) isTRUE(overrides[[override_name]]) else missing_default
     done_values <- not_done_values <- numeric()
     for (day in days) {
-      value <- sleep[[as.character(day)]][[metric]] %||% NA_real_; if (is.null(value) || is.na(value)) next
-      status <- lifestyle[[as.character(day)]][[activity]] %||% NA
+      # Iterating over a Date vector strips its Date class in base R, so
+      # as.character(day) would produce the internal day number (e.g. 20349)
+      # instead of the ISO keys used by the imported JSON data.
+      day_key <- format(as.Date(day, origin = "1970-01-01"), "%Y-%m-%d")
+      value <- sleep[[day_key]][[metric]] %||% NA_real_; if (is.null(value) || is.na(value)) next
+      status <- lifestyle[[day_key]][[activity]] %||% NA
       if (is.na(status)) { if (!missing_no) next; status <- FALSE }
       if (isTRUE(status)) done_values <- c(done_values, value) else not_done_values <- c(not_done_values, value)
     }
