@@ -1279,6 +1279,30 @@ canonical_basename <- function(path) {
   b
 }
 
+# Match exports whose names have a date or other prefix added before the
+# configured sensor filename. Compare filename stems using only letters and
+# digits so harmless separator and extension formatting differences do not
+# prevent identification.
+match_sensor_id_from_filename <- function(path) {
+  stem_key <- function(value) {
+    value <- tools::file_path_sans_ext(basename(value))
+    gsub("[^[:alnum:]]", "", tolower(value))
+  }
+  file_key <- stem_key(path)
+  if (!nzchar(file_key)) return(NA_character_)
+
+  configured <- vapply(names(config$sensor_files), function(id) {
+    stem_key(config$sensor_files[[id]]$path)
+  }, character(1))
+  matches <- names(configured)[nzchar(configured) & vapply(configured, function(key) grepl(key, file_key, fixed = TRUE), logical(1))]
+  if (length(matches) == 0) return(NA_character_)
+  # Prefer the most specific configured filename if one is a substring of
+  # another; ties are ambiguous and must fall through to header detection.
+  longest <- max(nchar(configured[matches]))
+  matches <- matches[nchar(configured[matches]) == longest]
+  if (length(matches) == 1) matches[[1]] else NA_character_
+}
+
 is_single_day_sleep_csv <- function(path) {
   lines <- tryCatch(readLines(path, n = 20, warn = FALSE, encoding = "UTF-8"),
                     error = function(e) character(0))
@@ -1336,6 +1360,8 @@ is_sleep_csv <- function(path, mapping) {
 # helper to inspect a sensor CSV and return the matching sensor_files entry (or NULL)
 detect_sensor_config <- function(path) {
   base <- canonical_basename(path)
+  filename_id <- match_sensor_id_from_filename(path)
+  if (!is.na(filename_id)) return(config$sensor_files[[filename_id]])
   # explicit paths first
   for (id in names(config$sensor_files)) {
     if (base == canonical_basename(config$sensor_files[[id]]$path)) return(config$sensor_files[[id]])
@@ -1375,6 +1401,8 @@ get_sensor_file_info <- function(path) {
 # rows are included when a calendar entry specifies a particular sensor.
 identify_sensor_id <- function(path) {
   base <- canonical_basename(path)
+  filename_id <- match_sensor_id_from_filename(path)
+  if (!is.na(filename_id)) return(filename_id)
   for (id in names(config$sensor_files)) {
     if (base == canonical_basename(config$sensor_files[[id]]$path)) return(id)
   }
