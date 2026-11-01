@@ -55,5 +55,3 @@ RScript/sleep_source_compare*
 Cache/
 GarminConnectBridge/*.json
 .env
-.garminconnect/
-.garmin-credentials.dpapi

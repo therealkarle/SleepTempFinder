@@ -256,7 +256,7 @@ analysis_metrics:
 #   csv      - use only CSV files found under data_directory
 #   api      - fetch all sleep data from the Sleep Score Private API
 #   sleepscorebattle - alias for api
-#   garmin   - fetch sleep data through python-garminconnect (default)
+#   garmin   - fetch sleep data through Garmin Connect Personal API (default)
 #   garmin_local - read the complete history from a local garmin-local-mcp SQLite database
 #   combined - use both; priority determines which source wins for dates
 #              that appear in both.  Additionally, csv_skip_fields lets you
@@ -298,12 +298,6 @@ sleep_source:
     date_start: ""
     date_end: ""
   garmin:
-    cache_dir: "../Cache/garmin"
-    token_store: ""
-    cache_ttl_seconds: 86400
-    # Extra Garmin endpoint metrics. Sleep stress is also read directly from
-    # the sleep response; this adds the daily stress endpoint as a fallback.
-    metrics: [stress]
   garmin_local:
     # Read-only SQLite warehouse path. No date filter is applied in this mode.
     db_path: "C:/Users/flori/.garmin-mcp/garmin.db"

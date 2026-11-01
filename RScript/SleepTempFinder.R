@@ -19,7 +19,7 @@ if (!require("rstudioapi")) install.packages("rstudioapi")
 if (is.null(getOption("repos")) || getOption("repos")[[1]] == "@CRAN@") {
   options(repos = c(CRAN = "https://cloud.r-project.org"))
 }
-pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales", "future", "furrr", "jsonlite")
+pkgs <- c("tidyverse", "lubridate", "yaml", "broom", "GGally", "gridExtra", "grid", "scales", "future", "furrr", "jsonlite", "curl")
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) install.packages(pkg, dependencies = TRUE)
   library(pkg, character.only = TRUE)
@@ -194,12 +194,10 @@ sleep_api_cache_ttl <- as.numeric(sleep_api_cfg$cache_ttl_seconds %||% 86400)
 sleep_api_metrics <- trimws(unlist(sleep_api_cfg$metrics %||% character(0)))
 
 garmin_cfg <- sleep_source_cfg$garmin %||% list()
-garmin_bridge_path <- file.path(script_directory, "..", "GarminConnectBridge", "garmin_bridge.py")
-garmin_cache_dir <- path.expand(as.character(garmin_cfg$cache_dir %||% file.path(script_directory, "..", "Cache", "garmin")))
-garmin_token_store <- path.expand(as.character(garmin_cfg$token_store %||% Sys.getenv("GARMINTOKENS", unset = "")))
-garmin_cache_ttl <- as.integer(garmin_cfg$cache_ttl_seconds %||% 86400)
-garmin_metrics <- trimws(unlist(garmin_cfg$metrics %||% character(0)))
-garmin_metrics <- garmin_metrics[nzchar(garmin_metrics)]
+garmin_personal_api_key <- trimws(as.character(garmin_cfg$personal_api_key %||% ""))
+if (!nzchar(garmin_personal_api_key)) {
+  garmin_personal_api_key <- trimws(Sys.getenv("GARMIN_PERSONAL_API_KEY", unset = ""))
+}
 
 garmin_local_cfg <- sleep_source_cfg$garmin_local %||% list()
 garmin_local_bridge_path <- file.path(script_directory, "..", "GarminConnectBridge", "garmin_local_bridge.py")
@@ -493,7 +491,7 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL,
     rows <- rows %>%
       mutate(
         Date = as.Date(Date),
-        bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
+   Nein,      bedtime = parse_datetime_safe(bedtime, type = "garmin_time"),
         waketime = parse_datetime_safe(waketime, type = "garmin_time")
       ) %>%
     mutate(
@@ -532,47 +530,90 @@ read_sleep_api <- function(mapping, date_start = NULL, date_end = NULL,
     )
 }
 
-read_garmin_bridge <- function(date_start, date_end) {
-  if (!file.exists(garmin_bridge_path)) {
-    stop("Garmin bridge not found: ", garmin_bridge_path)
+read_garmin_personal_api <- function(date_start, date_end) {
+  if (!nzchar(garmin_personal_api_key)) {
+    stop("Set GARMIN_PERSONAL_API_KEY or sleep_source.garmin.personal_api_key to a Garmin Connect Personal API key.")
   }
-  if (nzchar(garmin_token_store)) Sys.setenv(GARMINTOKENS = garmin_token_store)
-  python_bin <- Sys.getenv("PYTHON", unset = "python")
-  metric_arg <- paste(garmin_metrics, collapse = ",")
-  args <- c(
-    garmin_bridge_path,
-    "--start", format(as.Date(date_start), "%Y-%m-%d"),
-    "--end", format(as.Date(date_end), "%Y-%m-%d"),
-    "--cache-dir", garmin_cache_dir,
-    "--ttl", as.character(garmin_cache_ttl),
-    "--metrics", metric_arg,
-    "--output", tempfile("garmin-result-", fileext = ".json")
+  api_base <- "https://personal.connectapi.garmin.com"
+  request_json <- function(path, token = NULL, query = character()) {
+    url <- paste0(api_base, path)
+    if (length(query)) url <- paste0(url, "?", paste(query, collapse = "&"))
+    handle <- curl::new_handle(httpheader = c(
+      Accept = "application/json",
+      if (is.null(token)) paste0("Authorization: ApiKey ", garmin_personal_api_key) else paste0("Authorization: Bearer ", token)
+    ))
+    if (is.null(token)) curl::handle_setopt(handle, customrequest = "POST")
+    response <- curl::curl_fetch_memory(url, handle = handle)
+    if (response$status_code < 200 || response$status_code >= 300) {
+      stop("Garmin Personal API returned HTTP ", response$status_code, " for ", path)
+    }
+    if (!nzchar(rawToChar(response$content))) return(NULL)
+    jsonlite::fromJSON(rawToChar(response$content), simplifyVector = FALSE)
+  }
+  # Garmin's personal key endpoint issues short-lived OAuth bearer tokens.
+  token_url <- paste0(api_base, "/personalapitoken-service/personal-api/personal-api-key/token")
+  token_handle <- curl::new_handle(
+    httpheader = c("Accept: */*", paste0("Authorization: ApiKey ", garmin_personal_api_key)),
+    customrequest = "POST"
   )
-  output_index <- match("--output", args) + 1L
-  bridge_output <- args[[output_index]]
-  on.exit(unlink(bridge_output), add = TRUE)
-  bridge_stderr <- tempfile("garmin-bridge-", fileext = ".log")
-  on.exit(unlink(bridge_stderr), add = TRUE)
-  output <- system2(python_bin, args = args, stdout = TRUE, stderr = bridge_stderr)
-  bridge_messages <- if (file.exists(bridge_stderr)) {
-    readLines(bridge_stderr, warn = FALSE, encoding = "UTF-8")
-  } else {
-    character(0)
+  token_response <- curl::curl_fetch_memory(token_url, handle = token_handle)
+  if (token_response$status_code < 200 || token_response$status_code >= 300) {
+    stop("Garmin Personal API token exchange returned HTTP ", token_response$status_code, ".")
   }
-  if (length(bridge_messages) > 0) {
-    cat(paste(bridge_messages, collapse = "\n"), "\n")
+  bearer_token <- trimws(rawToChar(token_response$content))
+  if (!nzchar(bearer_token)) stop("Garmin Personal API token exchange returned an empty token.")
+  flatten_object <- function(x, prefix = "") {
+    out <- list()
+    if (is.list(x) && !is.null(names(x))) {
+      for (name in names(x)) out <- c(out, flatten_object(x[[name]], if (nzchar(prefix)) paste(prefix, name, sep = ".") else name))
+    } else if (is.list(x)) {
+      return(out)
+    } else if (nzchar(prefix)) out[[prefix]] <- x
+    out
   }
-  status <- attr(output, "status") %||% 0L
-  if (!identical(as.integer(status), 0L)) {
-    stop("Garmin bridge failed:\n", paste(c(bridge_messages, output), collapse = "\n"))
+  pick_flat <- function(flat, aliases) {
+    keys <- normalize_api_name(names(flat))
+    idx <- match(normalize_api_name(aliases), keys)
+    idx <- idx[!is.na(idx)]
+    if (length(idx)) flat[[idx[[1]]]] else NA
   }
-  json_lines <- readLines(bridge_output, warn = FALSE, encoding = "UTF-8")
-  payload <- tryCatch(
-    jsonlite::fromJSON(paste(json_lines, collapse = "\n"), flatten = TRUE),
-    error = function(e) stop("Failed to parse Garmin bridge response: ", conditionMessage(e))
-  )
-  rows <- as_tibble(payload, .name_repair = "unique")
-  if (nrow(rows) == 0) stop("Garmin Connect returned no sleep rows.")
+  as_local_timestamp <- function(value) {
+    if (length(value) == 0 || is.na(value)) return(NA_character_)
+    value <- as.character(value)
+    if (grepl("^[0-9]+$", value)) {
+      seconds <- as.numeric(value) / if (nchar(value) >= 13) 1000 else 1
+      return(format(as.POSIXct(seconds, origin = "1970-01-01", tz = "UTC"), "%Y-%m-%dT%H:%M:%S", tz = "UTC"))
+    }
+    value
+  }
+  get_json <- function(path, query) {
+    request_json(path, bearer_token, query)
+  }
+  dates <- seq(as.Date(date_start), as.Date(date_end), by = "day")
+  rows <- purrr::map_dfr(dates, function(day) {
+    day_text <- format(day, "%Y-%m-%d")
+    sleep <- get_json("/sleep-service/sleep/dailySleep", paste0("date=", day_text))
+    hrv <- get_json(paste0("/hrv-service/hrv/", day_text), character())
+    flat <- c(flatten_object(sleep), flatten_object(hrv))
+    duration_seconds <- suppressWarnings(as.numeric(pick_flat(flat, c(
+      "dailySleepDTO.sleepTimeSeconds", "sleepTimeSeconds", "totalSleepTimeSeconds", "totalSleepSeconds"
+    ))))
+    tibble(
+      Date = day_text,
+      bedtime = as_local_timestamp(pick_flat(flat, c("dailySleepDTO.sleepStartTimestampLocal", "sleepStartTimestampLocal", "sleepStartTimeLocal"))),
+      waketime = as_local_timestamp(pick_flat(flat, c("dailySleepDTO.sleepEndTimestampLocal", "sleepEndTimestampLocal", "sleepEndTimeLocal"))),
+      Sleep_Score = suppressWarnings(as.numeric(pick_flat(flat, c("dailySleepDTO.sleepScores.overall.value", "sleepScores.overall.value", "sleepScore", "overallSleepScore")))),
+      HRV = suppressWarnings(as.numeric(pick_flat(flat, c("lastNightAvg", "avgOvernightHrv", "averageOvernightHrv", "weeklyAvg")))),
+      RHR = suppressWarnings(as.numeric(pick_flat(flat, c("restingHeartRate", "restingHr", "restingHeartRateValue")))),
+      Sleep_Duration = duration_seconds / 3600,
+      Deep_Sleep_Seconds = suppressWarnings(as.numeric(pick_flat(flat, c("dailySleepDTO.deepSleepSeconds", "deepSleepSeconds", "deepSleepTimeSeconds")))),
+      REM_Seconds = suppressWarnings(as.numeric(pick_flat(flat, c("dailySleepDTO.remSleepSeconds", "remSleepSeconds", "remSleepTimeSeconds")))),
+      Wake_Time = suppressWarnings(as.numeric(pick_flat(flat, c("dailySleepDTO.awakeSleepSeconds", "awakeSleepSeconds", "awakeTimeSeconds")))),
+      Restless_Moments = suppressWarnings(as.numeric(pick_flat(flat, c("dailySleepDTO.restlessMomentsCount", "restlessMomentsCount", "restlessMoments")))),
+      Stress = suppressWarnings(as.numeric(pick_flat(flat, c("dailySleepDTO.avgSleepStress", "averageStressLevel", "avgStressLevel"))))
+    )
+  })
+  if (nrow(rows) == 0) stop("Garmin Personal API returned no sleep rows.")
   rows <- normalize_sleep_api_rows(rows, mapping)
   # Keep the bridge contract canonical even when an older bridge/cache used
   # one of Garmin's raw wake-time field names.
@@ -631,7 +672,7 @@ read_garmin_bridge <- function(date_start, date_end) {
     ) %>%
     mutate(
       Source_File = paste0("garmin://", format(as.Date(date_start), "%Y-%m-%d"), "_", format(as.Date(date_end), "%Y-%m-%d")),
-      Source_Name = "Garmin Connect API",
+      Source_Name = "Garmin Connect Personal API",
       Sleep_Source = "garmin"
     )
   rows
@@ -1693,7 +1734,10 @@ apply_outlier_filter <- function(df, outlier_cfg) {
   cfg <- normalize_outlier_filter(outlier_cfg)
   if (cfg$mode == "false" || nrow(df) == 0) {
     out <- df %>% mutate(Outlier_Columns = list(character(0)), Outlier_Reason = NA_character_)
-    return(list(data = out, excluded = as.Date(character(0)), bounds = list()))
+    return(list(data = out,
+                all = out,
+                excluded = as.Date(character(0)),
+                bounds = list()))
   }
 
   bounds <- compute_outlier_bounds(df, cfg, outlier_metrics)
@@ -2350,7 +2394,7 @@ all_sensor_files <- classification$all_sensor_files
 sleep_df_raw <- if (sleep_source_mode == "api") {
   read_sleep_api(mapping)
 } else if (sleep_source_mode == "garmin") {
-  read_garmin_bridge(start_date, end_date)
+  read_garmin_personal_api(start_date, end_date)
 } else if (sleep_source_mode == "garmin_local") {
   read_garmin_local_bridge()
 } else {

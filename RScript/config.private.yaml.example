@@ -3,9 +3,8 @@
 # you can optionally override scan behavior
 #scan_recursive: true
 
-# Garmin Connect is the default source. Set GARMIN_EMAIL and optionally
-# GARMIN_PASSWORD in the environment; the wrapper stores refresh tokens in
-# GARMINTOKENS (or use sleep_source.garmin.token_store below).
+# Garmin Connect Personal API is the default source. Create a Personal API key
+# in Garmin Connect, then set GARMIN_PERSONAL_API_KEY in your environment.
 sleep_source:
   mode: "garmin"
   priority: "garmin"
@@ -14,10 +13,7 @@ sleep_source:
     date_start: ""
     date_end: ""
   garmin:
-    token_store: ""
-    cache_dir: "../Cache/garmin"
-    cache_ttl_seconds: 86400
-    metrics: []
+    personal_api_key: ""
   # Alternative local-first source. It reads the complete database history
   # read-only; query.days/date_start/date_end are not used in this mode.
   garmin_local:
