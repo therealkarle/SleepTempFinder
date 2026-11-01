@@ -199,12 +199,6 @@ garmin_cache_dir <- path.expand(as.character(garmin_cfg$cache_dir %||% file.path
 garmin_token_store <- path.expand(as.character(garmin_cfg$token_store %||% Sys.getenv("GARMINTOKENS", unset = "")))
 garmin_cache_ttl <- as.integer(garmin_cfg$cache_ttl_seconds %||% 86400)
 garmin_metrics <- trimws(unlist(garmin_cfg$metrics %||% character(0)))
-if (isTRUE(garmin_cfg$lifestyle_logging$enabled)) {
-  garmin_metrics <- unique(c(garmin_metrics, "lifestyle_logging"))
-}
-garmin_lifestyle_output_dir <- path.expand(as.character(
-  garmin_cfg$lifestyle_logging$output_dir %||% file.path(garmin_cache_dir, "lifestyle_logging")
-))
 garmin_metrics <- garmin_metrics[nzchar(garmin_metrics)]
 
 garmin_local_cfg <- sleep_source_cfg$garmin_local %||% list()
@@ -552,7 +546,6 @@ read_garmin_bridge <- function(date_start, date_end) {
     "--cache-dir", garmin_cache_dir,
     "--ttl", as.character(garmin_cache_ttl),
     "--metrics", metric_arg,
-    "--lifestyle-output-dir", garmin_lifestyle_output_dir,
     "--output", tempfile("garmin-result-", fileext = ".json")
   )
   output_index <- match("--output", args) + 1L

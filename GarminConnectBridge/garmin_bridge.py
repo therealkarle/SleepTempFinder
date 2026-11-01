@@ -88,7 +88,6 @@ ENDPOINTS = {
     "stress": "get_all_day_stress",
     "body_battery": "get_body_battery",
     "heart_rate": "get_heart_rates",
-    "lifestyle_logging": "get_lifestyle_logging_data",
 }
 
 
@@ -247,7 +246,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ttl", type=int, default=86400)
     parser.add_argument("--metrics", default="")
     parser.add_argument("--identity", default="default")
-    parser.add_argument("--lifestyle-output-dir", default="")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 
@@ -271,16 +269,7 @@ def main() -> int:
             if not method:
                 continue
             payload = fetch_cached(client, method, day_text, [day_text], cache_dir=cache_dir, ttl=args.ttl, identity=args.identity)
-            if metric == "lifestyle_logging":
-                row["Garmin_LifestyleLogging"] = payload
-                if args.lifestyle_output_dir:
-                    output_dir = Path(args.lifestyle_output_dir)
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    (output_dir / f"{day_text}_LifestyleLogging.json").write_text(
-                        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-                    )
-            else:
-                merge_endpoint_metric(row, metric, payload)
+            merge_endpoint_metric(row, metric, payload)
         rows.append(row)
         day += timedelta(days=1)
     output_path = Path(args.output)

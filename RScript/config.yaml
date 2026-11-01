@@ -304,9 +304,6 @@ sleep_source:
     # Extra Garmin endpoint metrics. Sleep stress is also read directly from
     # the sleep response; this adds the daily stress endpoint as a fallback.
     metrics: [stress]
-    lifestyle_logging:
-      enabled: true
-      output_dir: "../Cache/garmin/lifestyle_logging"
   garmin_local:
     # Read-only SQLite warehouse path. No date filter is applied in this mode.
     db_path: "C:/Users/flori/.garmin-mcp/garmin.db"

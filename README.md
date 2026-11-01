@@ -328,8 +328,6 @@ If you want, this README can also be extended with a dedicated CSV column refere
   fallback for temporary network/server failures.
 - Configure optional Garmin metrics in `sleep_source.garmin.metrics` using `hrv`,
   `respiration`, `spo2`, `stress`, `body_battery`, or `heart_rate`.
-- Set `sleep_source.garmin.lifestyle_logging.enabled: true` to load Garmin
-  LifestyleLogging data when the account exposes it.
 - Set `sleep_source.sleepscorebattle.enabled: true` while using Garmin mode to
   enrich Garmin nights with SleepScoreBattle custom metrics such as sleep latency,
   time in bed, pre-sleep heart rate, and other returned sleep metrics.
